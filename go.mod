@@ -1,4 +1,4 @@
-module github.com/aceneil/neilwz-nav-tui
+module github.com/aceneil/nav4neil
 
 go 1.27.1
 

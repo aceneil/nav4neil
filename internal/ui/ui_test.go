@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aceneil/neilwz-nav-tui/internal/fs"
-	"github.com/aceneil/neilwz-nav-tui/internal/servers"
+	"github.com/aceneil/nav4neil/internal/fs"
+	"github.com/aceneil/nav4neil/internal/servers"
 	"github.com/charmbracelet/bubbletea"
 )
 

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/aceneil/neilwz-nav-tui/internal/action"
-	"github.com/aceneil/neilwz-nav-tui/internal/servers"
+	"github.com/aceneil/nav4neil/internal/action"
+	"github.com/aceneil/nav4neil/internal/servers"
 )
 
 func main() {

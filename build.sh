@@ -39,5 +39,5 @@ ldflags=(-trimpath)
 if ! $debug; then
   ldflags+=(-ldflags '-s -w')
 fi
-CGO_ENABLED=0 go build "${ldflags[@]}" -o bin/neilwz-nav-tui ./cmd/neilwz-nav-tui
-printf 'built bin/neilwz-nav-tui\n'
+CGO_ENABLED=0 go build "${ldflags[@]}" -o bin/nav4neil ./cmd/nav4neil
+printf 'built bin/nav4neil\n'

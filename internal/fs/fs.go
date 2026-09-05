@@ -1,4 +1,4 @@
-// Package fs implements the local file browser used by neilwz-nav-tui's lower pane.
+// Package fs implements the local file browser used by nav4neil's lower pane.
 // It is intentionally small: read directory listing, sort, expose entries,
 // and answer a few navigation primitives (parent, into). It does NOT
 // recurse into subdirectories — the UI calls back into ListDir each time

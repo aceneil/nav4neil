@@ -3,7 +3,7 @@ package action
 import (
 	"testing"
 
-	"github.com/aceneil/neilwz-nav-tui/internal/servers"
+	"github.com/aceneil/nav4neil/internal/servers"
 )
 
 func TestBuild_InZellij(t *testing.T) {

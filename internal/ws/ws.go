@@ -1,6 +1,6 @@
-// Package ws embeds a tiny local-only WebSocket server inside the neilwz-nav-tui
+// Package ws embeds a tiny local-only WebSocket server inside the nav4neil
 // binary. It is the v1 plumbing for the future "TUI ↔ daemon" channel
-// (the daemon role is just neilwz-nav-tui itself for now). Endpoints exposed on
+// (the daemon role is just nav4neil itself for now). Endpoints exposed on
 // 127.0.0.1:<port>:
 //
 //	GET /health    → JSON: {"ok":true,"pid":N,"context":"<ctx>","port":N}
@@ -151,7 +151,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"pid":     os.Getpid(),
 		"context": s.Context(),
 		"port":    s.port,
-		"version": "neilwz-nav-tui-v1",
+		"version": "nav4neil-v1",
 	})
 }
 

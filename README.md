@@ -1,6 +1,6 @@
-# neilwz-nav-tui
+# nav4neil
 
-`neilwz-nav-tui` 是 WezTerm4Neil 的独立导航 TUI。它把 SSH 服务器列表和
+`nav4neil` 是 WezTerm4Neil 的独立导航 TUI。它把 SSH 服务器列表和
 本地文件浏览组合在一个可嵌入的 Go 程序中，也可以拆成两个 Zellij pane，
 分别运行 `servers` 与 `files` 区段。
 
@@ -22,23 +22,23 @@
 ```bash
 ./build.sh
 # 或
-CGO_ENABLED=0 go build -o bin/neilwz-nav-tui ./cmd/neilwz-nav-tui
+CGO_ENABLED=0 go build -o bin/nav4neil ./cmd/nav4neil
 
 ./build.sh --test          # gofmt + go vet + go test + build
 ./build.sh --no-binary     # 只运行 gofmt、go vet、go test
 ./build.sh --debug         # 保留调试符号
 ```
 
-产物是 `bin/neilwz-nav-tui`（默认不链接 CGO）。仓库不提交 `bin/`，可按需安装：
+产物是 `bin/nav4neil`（默认不链接 CGO）。仓库不提交 `bin/`，可按需安装：
 
 ```bash
-install -Dm755 bin/neilwz-nav-tui ~/.local/bin/neilwz-nav-tui
+install -Dm755 bin/nav4neil ~/.local/bin/nav4neil
 ```
 
 ## 使用
 
 ```text
-neilwz-nav-tui [options]
+nav4neil [options]
 
 -start-dir <path>   起始目录（默认 $HOME）
 -ws-port <n>        WebSocket 起始端口（默认 39771，被占用后递增）
@@ -52,7 +52,7 @@ neilwz-nav-tui [options]
 默认模式在单个进程中显示两个区段：
 
 ```bash
-neilwz-nav-tui
+nav4neil
 ```
 
 `both` 模式下可用 `Tab` 在 pane 间切换，`1`/`2` 直接切换服务器/文件区段。
@@ -62,8 +62,8 @@ neilwz-nav-tui
 layout {
   pane split_direction="vertical" {
     pane split_direction="horizontal" {
-      pane size="50%" { command "neilwz-nav-tui -section servers" }
-      pane size="50%" { command "neilwz-nav-tui -section files --start-dir ~/Documents" }
+      pane size="50%" { command "nav4neil -section servers" }
+      pane size="50%" { command "nav4neil -section files --start-dir ~/Documents" }
     }
     pane { command "nvim" }
   }
@@ -95,7 +95,7 @@ layout {
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `GET` | `/health` | 返回 PID、context、端口和 `neilwz-nav-tui-v1` 版本 |
+| `GET` | `/health` | 返回 PID、context、端口和 `nav4neil-v1` 版本 |
 | `GET` | `/context` | 读取当前服务器 context |
 | `POST` | `/context` | 写入 `{"context":"..."}` |
 
@@ -131,7 +131,7 @@ Yazi 图标数据的完整 MIT 许可见 `LICENSE-ICONS`。
 .
 ├── build.sh                         # 编译、vet、test 入口
 ├── go.mod / go.sum
-├── cmd/neilwz-nav-tui/              # 主程序
+├── cmd/nav4neil/              # 主程序
 ├── cmd/_smoke/                      # ws 与 action 冒烟驱动
 └── internal/
     ├── icon/                        # Yazi 同规模 Nerd Font 图标表

@@ -1,4 +1,4 @@
-// Package ui wires the neilwz-nav-tui TUI on top of bubbletea. Layout (SectionBoth):
+// Package ui wires the nav4neil TUI on top of bubbletea. Layout (SectionBoth):
 //
 //	┌─ Servers ─────────────┐
 //	│ a1                    │
@@ -24,7 +24,7 @@
 // exactly one pane and consumes the full height minus the title + status
 // row. Tab / 1 / 2 are silently ignored (no other pane exists), 'r'
 // refreshes only the active section, and the focus marker is always the
-// focused-arrow form. This is what lets two neilwz-nav-tui instances live in two
+// focused-arrow form. This is what lets two nav4neil instances live in two
 // stacked Zellij panes and have focus moved between them via Zellij's
 // native Alt+h/j/k/l.
 package ui
@@ -40,11 +40,11 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/aceneil/neilwz-nav-tui/internal/action"
-	"github.com/aceneil/neilwz-nav-tui/internal/fs"
-	"github.com/aceneil/neilwz-nav-tui/internal/icon"
-	"github.com/aceneil/neilwz-nav-tui/internal/servers"
-	"github.com/aceneil/neilwz-nav-tui/internal/ws"
+	"github.com/aceneil/nav4neil/internal/action"
+	"github.com/aceneil/nav4neil/internal/fs"
+	"github.com/aceneil/nav4neil/internal/icon"
+	"github.com/aceneil/nav4neil/internal/servers"
+	"github.com/aceneil/nav4neil/internal/ws"
 )
 
 // pane identifies which pane currently owns focus.
@@ -60,7 +60,7 @@ const (
 // SectionBoth keeps the historical two-pane layout (default;
 // Tab / 1 / 2 cycles focus). SectionServers and SectionFiles render
 // only that one area, fill the available height, lock the focus to
-// the visible area, and ignore Tab / 1 / 2 — useful when each neilwz-nav-tui
+// the visible area, and ignore Tab / 1 / 2 — useful when each nav4neil
 // lives in its own Zellij pane and the user moves focus between the
 // two panes via Zellij's native Alt+h/j/k/l.
 type Section int
@@ -139,7 +139,7 @@ type Model struct {
 // focus to it; SectionFiles loads only the file browser and locks
 // focus there. In single-section mode the model skips the irrelevant
 // data load entirely (no ~/.ssh/config parsing for a files-only
-// neilwz-nav-tui, no ReadDir for a servers-only one).
+// nav4neil, no ReadDir for a servers-only one).
 func NewModel(startDir string, wss *ws.Server, section Section) *Model {
 	m := &Model{
 		section: section,
@@ -720,7 +720,7 @@ func (m *Model) statusLine() string {
 	}
 	// In single-section mode there is only one pane, so "pane=N" is
 	// noise; we surface "mode=servers|files" instead to make it easy
-	// to tell two stacked neilwz-nav-tui instances apart from the status line.
+	// to tell two stacked nav4neil instances apart from the status line.
 	var left string
 	switch m.section {
 	case SectionServers, SectionFiles:

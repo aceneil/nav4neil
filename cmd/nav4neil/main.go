@@ -1,15 +1,15 @@
-// neilwz-nav-tui — WezTerm4Neil 侧栏导航 TUI（左栏 20% 自研）。
+// nav4neil — WezTerm4Neil 侧栏导航 TUI（左栏 20% 自研）。
 //
 // 用法：
 //
-//	neilwz-nav-tui [--start-dir <path>] [--no-ws] [--ws-port <n>] [--section <s>] [--list]
+//	nav4neil [--start-dir <path>] [--no-ws] [--ws-port <n>] [--section <s>] [--list]
 //	        [--version] [--help]
 //
 //	--start-dir <path>   起始目录（默认 $HOME）
 //	--ws-port <n>        ws 起始端口（默认 39771，被占用自动 +1；环境变量 NEILWZ_NAV_TUI_WS 覆盖）
 //	--no-ws              禁用内嵌 websocket 服务（用于最小化场景）
 //	--section <s>        渲染区段：both（默认）/ servers / files。
-//	                     单段模式便于把 neilwz-nav-tui 拆到两个 Zellij pane，
+//	                     单段模式便于把 nav4neil 拆到两个 Zellij pane，
 //	                     通过 Alt+h/j/k/l 在 pane 间挪焦点，
 //	                     每个 pane 内只用 j/k/Enter/… 即可。
 //	--list               解析服务器列表并以易读文本打印到 stdout，退出
@@ -36,9 +36,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/aceneil/neilwz-nav-tui/internal/servers"
-	"github.com/aceneil/neilwz-nav-tui/internal/ui"
-	"github.com/aceneil/neilwz-nav-tui/internal/ws"
+	"github.com/aceneil/nav4neil/internal/servers"
+	"github.com/aceneil/nav4neil/internal/ui"
+	"github.com/aceneil/nav4neil/internal/ws"
 )
 
 type sectionFlag struct {
@@ -70,14 +70,14 @@ func main() {
 	// Use the short spelling requested by the Zellij workflow; Go flag also
 	// accepts the conventional long spelling (--section).
 	sectionInput := sectionFlag{value: "both"}
-	flag.Var(&sectionInput, "section", "渲染区段：both|servers|files（单段模式便于把 neilwz-nav-tui 拆到两个 Zellij pane）")
+	flag.Var(&sectionInput, "section", "渲染区段：both|servers|files（单段模式便于把 nav4neil 拆到两个 Zellij pane）")
 	flag.BoolVar(&showVer, "version", false, "打印版本并退出")
 	flag.BoolVar(&showHelp, "help", false, "打印帮助并退出")
 	flag.Parse()
 
 	section, err := ui.ParseSection(sectionInput.value)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "neilwz-nav-tui:", err)
+		fmt.Fprintln(os.Stderr, "nav4neil:", err)
 		os.Exit(2)
 	}
 
@@ -88,12 +88,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  HOME              起始目录 + ssh config 路径")
 		fmt.Fprintln(os.Stderr, "  XDG_CONFIG_HOME   servers.txt 所在 wezterm4neil/ 子目录根")
 		fmt.Fprintln(os.Stderr, "\n示例（Zellij 双 pane 拆分):")
-		fmt.Fprintln(os.Stderr, "  neilwz-nav-tui --section servers   # 左上：服务器列表")
-		fmt.Fprintln(os.Stderr, "  neilwz-nav-tui --section files     # 左下：文件浏览")
+		fmt.Fprintln(os.Stderr, "  nav4neil --section servers   # 左上：服务器列表")
+		fmt.Fprintln(os.Stderr, "  nav4neil --section files     # 左下：文件浏览")
 		os.Exit(0)
 	}
 	if showVer {
-		fmt.Printf("neilwz-nav-tui %s\n", version)
+		fmt.Printf("nav4neil %s\n", version)
 		os.Exit(0)
 	}
 
@@ -106,7 +106,7 @@ func main() {
 	// cron job or CI -section smoke check) graceful instead of leaking a
 	// low-level open /dev/tty error.
 	if !hasTerminal() {
-		fmt.Fprintln(os.Stderr, "neilwz-nav-tui: interactive TUI requires a terminal; use --list or run inside a terminal/Zellij")
+		fmt.Fprintln(os.Stderr, "nav4neil: interactive TUI requires a terminal; use --list or run inside a terminal/Zellij")
 		return
 	}
 
@@ -115,7 +115,7 @@ func main() {
 	if !noWS {
 		wss = ws.New("local")
 		if err := wss.Start(wsPort); err != nil {
-			log.Printf("neilwz-nav-tui: ws disabled: %v", err)
+			log.Printf("nav4neil: ws disabled: %v", err)
 			wss = nil
 		} else if wss != nil {
 			// 优雅退出时关掉。
@@ -136,7 +136,7 @@ func main() {
 	}()
 
 	if _, err := prog.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "neilwz-nav-tui: TUI error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "nav4neil: TUI error: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -149,7 +149,7 @@ func hasTerminal() bool {
 // 同时打印 servers.txt / ssh config 路径，让脚本/CI 能快速验证。
 func runList(w io.Writer) {
 	entries := servers.Load()
-	fmt.Fprintf(w, "neilwz-nav-tui %s\n", version)
+	fmt.Fprintf(w, "nav4neil %s\n", version)
 	fmt.Fprintf(w, "ssh config: %s\n", servers.SSHConfigPath())
 	fmt.Fprintf(w, "extra list : %s\n", servers.ExtraListPath())
 	fmt.Fprintf(w, "count      : %d\n\n", len(entries))
