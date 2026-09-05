@@ -48,6 +48,16 @@ func HaveZellijBin() bool {
 // Build computes the Plan for connecting to e. It does not touch the
 // filesystem beyond looking at PATH.
 func Build(e servers.Entry) Plan {
+	if e.Source == "builtin" {
+		shell := "bash"
+		if _, err := exec.LookPath("fish"); err == nil {
+			shell = "fish"
+		}
+		if InZellij() {
+			return Plan{UseZellij: true, TabName: "local", Argv: []string{"zellij", "action", "new-tab", "--name", "local", "--", shell}, Detected: "zellij"}
+		}
+		return Plan{UseZellij: false, TabName: "local", Argv: []string{shell}, Detected: "no-zellij"}
+	}
 	tab := servers.TabName(e)
 	target := servers.SSHArg(e)
 

@@ -422,9 +422,9 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.lastClickY = msg.Y
 		switch m.section {
 		case SectionServers:
-			// Layout: header (0), rows (1..height-2), status (last).
-			if y >= 1 && y < m.height-1 {
-				m.serverCursor = clamp(y-1, 0, max(0, len(m.serversView)-1))
+			// Rows start at the top; the final row is the status bar.
+			if y >= 0 && y < m.height-1 {
+				m.serverCursor = clamp(y, 0, max(0, len(m.serversView)-1))
 				if double {
 					m.openSelectedServer()
 				}
@@ -495,7 +495,11 @@ func (m *Model) openSelectedServer() {
 	if m.wss != nil {
 		m.wss.SetContext(m.ctx)
 	}
-	m.status = fmt.Sprintf("→ %s  (zellij=%s)", plan.TabName, plan.Detected)
+	if sel.Source == "builtin" && !plan.UseZellij {
+		m.status = "localhost: opened shell in current pane (not Zellij)"
+	} else {
+		m.status = fmt.Sprintf("→ %s  (zellij=%s)", plan.TabName, plan.Detected)
+	}
 	if err := action.Run(context.Background(), plan); err != nil {
 		m.status = "exec failed: " + err.Error()
 	}
@@ -575,9 +579,8 @@ func (m *Model) View() string {
 	// This keeps stacked Zellij panes compact and avoids decorative borders.
 	switch m.section {
 	case SectionServers:
-		b.WriteString(truncRunes(m.sectionHeader(paneServers), m.width))
-		b.WriteByte('\n')
-		rows := m.height - 2
+		// Single servers mode intentionally has no servers title row.
+		rows := m.height - 1
 		if rows < 1 {
 			rows = 1
 		}
@@ -704,7 +707,7 @@ func (m *Model) renderFileRow(i int) string {
 	}
 	// Icons occupy one terminal cell (two columns) and are followed by a
 	// fixed space, keeping names aligned across a long file list.
-	label := icon.Aligned(it.Name, it.IsDir, it.IsLink) + marker + name
+	label := " " + marker + icon.Aligned(it.Name, it.IsDir, it.IsLink) + name
 	return truncRunes(pad(label, m.width, ' '), m.width)
 }
 

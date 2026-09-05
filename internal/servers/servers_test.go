@@ -108,3 +108,15 @@ func TestValidate_Empty(t *testing.T) {
 		t.Fatalf("unexpected: %v", err)
 	}
 }
+
+func TestInjectBuiltin_LocalhostAndDedup(t *testing.T) {
+	got := InjectBuiltin([]Entry{{Alias: "prod", Source: "ssh"}})
+	if len(got) != 2 || got[0].Alias != "localhost" || got[0].Desc != "本机" || got[0].Source != "builtin" {
+		t.Fatalf("unexpected injection: %+v", got)
+	}
+	kept := []Entry{{Alias: "LOCALHOST", Source: "ssh"}}
+	got = InjectBuiltin(kept)
+	if len(got) != 1 || got[0].Source != "ssh" {
+		t.Fatalf("localhost should be deduplicated: %+v", got)
+	}
+}

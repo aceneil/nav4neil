@@ -10,7 +10,7 @@ import (
 )
 
 // Entry describes one line in the merged server list.
-// Source is "ssh" (parsed from ~/.ssh/config) or "extra" (parsed from
+// Source is "builtin", "ssh" (parsed from ~/.ssh/config), or "extra" (parsed from
 // ~/.config/wezterm4neil/servers.txt).
 type Entry struct {
 	Alias    string // ssh Host name OR extra alias (left of "|")
@@ -148,6 +148,8 @@ func Load() []Entry {
 		}
 	}
 
+	out = InjectBuiltin(out)
+
 	if p := ExtraListPath(); p != "" {
 		if f, err := os.Open(p); err == nil {
 			extras, _ := ParseExtraList(f)
@@ -198,4 +200,17 @@ func Validate(entries []Entry) error {
 		}
 	}
 	return nil
+}
+
+// InjectBuiltin prepends the built-in localhost entry unless an existing
+// entry already uses that alias (notably an explicit SSH Host localhost).
+func InjectBuiltin(entries []Entry) []Entry {
+	for _, e := range entries {
+		if strings.EqualFold(e.Alias, "localhost") {
+			return entries
+		}
+	}
+	out := make([]Entry, 0, len(entries)+1)
+	out = append(out, Entry{Alias: "localhost", Desc: "本机", Source: "builtin"})
+	return append(out, entries...)
 }

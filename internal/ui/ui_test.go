@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aceneil/neilwz-nav-tui/internal/fs"
 	"github.com/aceneil/neilwz-nav-tui/internal/servers"
 	"github.com/charmbracelet/bubbletea"
 )
@@ -165,8 +166,8 @@ func TestModel_SectionServersView(t *testing.T) {
 	if strings.Contains(v, "Files") {
 		t.Fatalf("SectionServers view must NOT mention Files; got:\n%s", v)
 	}
-	if !strings.Contains(v, "neilwz-servers") {
-		t.Fatalf("SectionServers view must show neilwz-servers header; got:\n%s", v)
+	if strings.Contains(v, "neilwz-servers") {
+		t.Fatalf("SectionServers view must not show neilwz-servers header; got:\n%s", v)
 	}
 	if !strings.Contains(v, "mode=servers") {
 		t.Fatalf("SectionServers status line must contain mode=servers; got:\n%s", v)
@@ -254,5 +255,16 @@ func TestModel_SectionServersRefreshOnlyReloadsServers(t *testing.T) {
 	}
 	if !strings.Contains(m.status, "servers") {
 		t.Fatalf(`status must mention "servers", got %q`, m.status)
+	}
+}
+
+func TestRenderFileRow_PointerAndIconOrder(t *testing.T) {
+	m := &Model{width: 80, focus: paneFiles, fileCur: 0, fileView: []fs.Item{{Name: "README.md"}}}
+	row := m.renderFileRow(0)
+	if !strings.HasPrefix(row, " ▶ ") {
+		t.Fatalf("file row must start with space, focused pointer, space; got %q", row[:min(len(row), 12)])
+	}
+	if !strings.Contains(row, "README.md") || strings.Index(row, "README.md") < 4 {
+		t.Fatalf("file name/icon ordering wrong: %q", row)
 	}
 }
