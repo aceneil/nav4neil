@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aceneil/neilwz-nav-tui/internal/servers"
 	"github.com/charmbracelet/bubbletea"
-	"github.com/wezterm4neil/wznav/internal/servers"
 )
 
 func TestModel_InitialStateLoadsServers(t *testing.T) {
@@ -19,14 +19,14 @@ func TestModel_InitialStateLoadsServers(t *testing.T) {
 		t.Fatalf("fileView not initialised")
 	}
 	v := m.View()
-	if !strings.Contains(v, "wznav") {
-		t.Fatalf("View() missing title: %q", v)
+	if !strings.Contains(v, "neilwz-servers") {
+		t.Fatalf("View() missing server header: %q", v)
 	}
-	if !strings.Contains(v, "Servers") {
-		t.Fatalf("View() missing Servers header")
+	if !strings.Contains(v, "neilwz-files") && !strings.Contains(v, "/") {
+		t.Fatalf("View() missing files path header")
 	}
-	if !strings.Contains(v, "Files") {
-		t.Fatalf("View() missing Files header")
+	if strings.Contains(v, "Servers") || strings.Contains(v, "Files") {
+		t.Fatalf("View() uses legacy pane labels")
 	}
 }
 
@@ -147,7 +147,7 @@ func TestSection_String(t *testing.T) {
 
 // TestModel_SectionServersView verifies single-section servers mode:
 //   - no "Files" header anywhere
-//   - "Servers" header is always present and uses the focused arrow marker
+//   - "neilwz-servers" header is always present
 //   - status line shows "mode=servers" (NOT "pane=1")
 //   - the model did NOT load the file browser at all
 func TestModel_SectionServersView(t *testing.T) {
@@ -165,8 +165,8 @@ func TestModel_SectionServersView(t *testing.T) {
 	if strings.Contains(v, "Files") {
 		t.Fatalf("SectionServers view must NOT mention Files; got:\n%s", v)
 	}
-	if !strings.Contains(v, "▶ Servers") {
-		t.Fatalf("SectionServers view must show focused ▶ Servers header; got:\n%s", v)
+	if !strings.Contains(v, "neilwz-servers") {
+		t.Fatalf("SectionServers view must show neilwz-servers header; got:\n%s", v)
 	}
 	if !strings.Contains(v, "mode=servers") {
 		t.Fatalf("SectionServers status line must contain mode=servers; got:\n%s", v)
@@ -184,7 +184,7 @@ func TestModel_SectionServersView(t *testing.T) {
 
 // TestModel_SectionFilesView verifies single-section files mode:
 //   - no "Servers" header anywhere
-//   - "Files" header is always present and uses the focused arrow marker
+//   - the path header is always present and left aligned
 //   - status line shows "mode=files"
 //   - the model did NOT load the server list at all
 func TestModel_SectionFilesView(t *testing.T) {
@@ -197,8 +197,8 @@ func TestModel_SectionFilesView(t *testing.T) {
 	if strings.Contains(v, "Servers") {
 		t.Fatalf("SectionFiles view must NOT mention Servers; got:\n%s", v)
 	}
-	if !strings.Contains(v, "▶ Files") {
-		t.Fatalf("SectionFiles view must show focused ▶ Files header; got:\n%s", v)
+	if !strings.Contains(v, "/tmp") {
+		t.Fatalf("SectionFiles view must show the left-aligned path header; got:\n%s", v)
 	}
 	if !strings.Contains(v, "mode=files") {
 		t.Fatalf("SectionFiles status line must contain mode=files; got:\n%s", v)

@@ -1,8 +1,8 @@
-// wznav-ws-smoke is a small driver that proves the websocket server can
+// neilwz-nav-tui-ws-smoke is a small driver that proves the websocket server can
 // bind, serve /health and round-trip /context over plain HTTP. NOT shipped
 // in the final binary; used by nav/build.sh tests when network is available.
 //
-//	go run ./cmd/wznav-ws-smoke
+//	go run ./cmd/neilwz-nav-tui-ws-smoke
 package main
 
 import (
@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wezterm4neil/wznav/internal/ws"
+	"github.com/aceneil/neilwz-nav-tui/internal/ws"
 )
 
 func main() {

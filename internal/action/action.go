@@ -1,5 +1,5 @@
 // Package action decides how to launch a remote ssh session in response to
-// a user clicking a server in the wznav sidebar.
+// a user clicking a server in the neilwz-nav-tui sidebar.
 //
 // Rule:
 //   - If we are running inside a Zellij pane ($ZELLIJ is set and "zellij"
@@ -8,7 +8,7 @@
 //   - Otherwise → fall back to `zellij action new-tab` (still tries if
 //     the binary is on PATH), and if THAT fails we surface the error so
 //     the UI status bar can show it. We deliberately do NOT exec ssh in
-//     place: that would replace the wznav pane and break the sidebar.
+//     place: that would replace the neilwz-nav-tui pane and break the sidebar.
 //
 // The package only *describes* what to run; main() / the TUI owns the
 // exec. Keeping the command builder separate lets us unit-test it.
@@ -23,7 +23,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wezterm4neil/wznav/internal/servers"
+	"github.com/aceneil/neilwz-nav-tui/internal/servers"
 )
 
 // Plan describes one concrete execution the TUI should perform.

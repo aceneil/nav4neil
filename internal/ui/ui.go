@@ -1,4 +1,4 @@
-// Package ui wires the wznav TUI on top of bubbletea. Layout (SectionBoth):
+// Package ui wires the neilwz-nav-tui TUI on top of bubbletea. Layout (SectionBoth):
 //
 //	┌─ Servers ─────────────┐
 //	│ a1                    │
@@ -24,7 +24,7 @@
 // exactly one pane and consumes the full height minus the title + status
 // row. Tab / 1 / 2 are silently ignored (no other pane exists), 'r'
 // refreshes only the active section, and the focus marker is always the
-// focused-arrow form. This is what lets two wznav instances live in two
+// focused-arrow form. This is what lets two neilwz-nav-tui instances live in two
 // stacked Zellij panes and have focus moved between them via Zellij's
 // native Alt+h/j/k/l.
 package ui
@@ -32,16 +32,19 @@ package ui
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/wezterm4neil/wznav/internal/action"
-	"github.com/wezterm4neil/wznav/internal/fs"
-	"github.com/wezterm4neil/wznav/internal/servers"
-	"github.com/wezterm4neil/wznav/internal/ws"
+	"github.com/aceneil/neilwz-nav-tui/internal/action"
+	"github.com/aceneil/neilwz-nav-tui/internal/fs"
+	"github.com/aceneil/neilwz-nav-tui/internal/icon"
+	"github.com/aceneil/neilwz-nav-tui/internal/servers"
+	"github.com/aceneil/neilwz-nav-tui/internal/ws"
 )
 
 // pane identifies which pane currently owns focus.
@@ -57,7 +60,7 @@ const (
 // SectionBoth keeps the historical two-pane layout (default;
 // Tab / 1 / 2 cycles focus). SectionServers and SectionFiles render
 // only that one area, fill the available height, lock the focus to
-// the visible area, and ignore Tab / 1 / 2 — useful when each wznav
+// the visible area, and ignore Tab / 1 / 2 — useful when each neilwz-nav-tui
 // lives in its own Zellij pane and the user moves focus between the
 // two panes via Zellij's native Alt+h/j/k/l.
 type Section int
@@ -136,7 +139,7 @@ type Model struct {
 // focus to it; SectionFiles loads only the file browser and locks
 // focus there. In single-section mode the model skips the irrelevant
 // data load entirely (no ~/.ssh/config parsing for a files-only
-// wznav, no ReadDir for a servers-only one).
+// neilwz-nav-tui, no ReadDir for a servers-only one).
 func NewModel(startDir string, wss *ws.Server, section Section) *Model {
 	m := &Model{
 		section: section,
@@ -419,27 +422,27 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.lastClickY = msg.Y
 		switch m.section {
 		case SectionServers:
-			// Layout: title (0), header (1), rows (2..height-2), status (last).
-			if y >= 2 && y < m.height-1 {
-				m.serverCursor = clamp(y-2, 0, max(0, len(m.serversView)-1))
+			// Layout: header (0), rows (1..height-2), status (last).
+			if y >= 1 && y < m.height-1 {
+				m.serverCursor = clamp(y-1, 0, max(0, len(m.serversView)-1))
 				if double {
 					m.openSelectedServer()
 				}
 			}
 			return m, nil
 		case SectionFiles:
-			if y >= 2 && y < m.height-1 {
-				m.fileCur = clamp(y-2, 0, max(0, len(m.fileView)-1))
+			if y >= 1 && y < m.height-1 {
+				m.fileCur = clamp(y-1, 0, max(0, len(m.fileView)-1))
 				if double {
 					m.enterSelectedFile()
 				}
 			}
 			return m, nil
 		}
-		// SectionBoth: original two-area hit-test.
-		if y >= 2 && y < m.serverListEnd() {
+		// SectionBoth: server rows start immediately after the server header.
+		if y >= 1 && y < m.serverListEnd() {
 			m.focus = paneServers
-			m.serverCursor = clamp(y-2, 0, max(0, len(m.serversView)-1))
+			m.serverCursor = clamp(y-1, 0, max(0, len(m.serversView)-1))
 			if double {
 				m.openSelectedServer()
 			}
@@ -468,7 +471,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 // serverListEnd returns the row index of the section divider (between
 // servers and the file header). Layout:
-// title (0), server header (1), servers (2..sEnd-1), divider (sEnd),
+// server header (0), servers (1..sEnd-1), divider (sEnd),
 // file header (sEnd+1), files (sEnd+2..height-2), status (last).
 func (m *Model) serverListEnd() int {
 	usable := m.height - 1 // leave 1 for status
@@ -476,7 +479,7 @@ func (m *Model) serverListEnd() int {
 		usable = 6
 	}
 	serverH := usable / 2
-	return 2 + serverH
+	return 1 + serverH
 }
 
 // ----- Operations ----------------------------------------------------------
@@ -568,17 +571,13 @@ func (m *Model) View() string {
 		m.height = 24
 	}
 
-	// Title row (always 1 line). Tag includes the section so stacked
-	// wznav panes in the same Zellij session are visually distinguishable.
-	b.WriteString(pad(m.titleBar(), m.width, '-'))
-	b.WriteByte('\n')
-
+	// There is no separate product title row: the pane header is the title.
+	// This keeps stacked Zellij panes compact and avoids decorative borders.
 	switch m.section {
 	case SectionServers:
-		// Single-section: header (y=1), content (y=2..height-2), status (last).
-		b.WriteString(pad(" "+m.sectionHeader(paneServers)+" ", m.width, '-'))
+		b.WriteString(truncRunes(m.sectionHeader(paneServers), m.width))
 		b.WriteByte('\n')
-		rows := m.height - 3
+		rows := m.height - 2
 		if rows < 1 {
 			rows = 1
 		}
@@ -589,9 +588,9 @@ func (m *Model) View() string {
 			}
 		}
 	case SectionFiles:
-		b.WriteString(pad(" "+m.sectionHeader(paneFiles)+" ", m.width, '-'))
+		b.WriteString(truncRunes(m.sectionHeader(paneFiles), m.width))
 		b.WriteByte('\n')
-		rows := m.height - 3
+		rows := m.height - 2
 		if rows < 1 {
 			rows = 1
 		}
@@ -602,20 +601,20 @@ func (m *Model) View() string {
 			}
 		}
 	default:
-		// SectionBoth: original two-pane split.
+		// The two panes are stacked; the server pane ends at the divider.
 		sEnd := m.serverListEnd()
-		b.WriteString(pad(" "+m.sectionHeader(paneServers)+" ", m.width, '-'))
+		b.WriteString(truncRunes(m.sectionHeader(paneServers), m.width))
 		b.WriteByte('\n')
-		serverH := sEnd - 2
+		serverH := sEnd - 1
 		for i := 0; i < serverH; i++ {
 			b.WriteString(m.renderServerRow(i))
 			b.WriteByte('\n')
 		}
 		b.WriteString(pad("", m.width, '·'))
 		b.WriteByte('\n')
-		b.WriteString(pad(" "+m.sectionHeader(paneFiles)+" ", m.width, '-'))
+		b.WriteString(truncRunes(m.sectionHeader(paneFiles), m.width))
 		b.WriteByte('\n')
-		fileRows := m.height - sEnd - 3
+		fileRows := m.height - sEnd - 2
 		if fileRows < 1 {
 			fileRows = 1
 		}
@@ -633,38 +632,35 @@ func (m *Model) View() string {
 	return b.String()
 }
 
-// titleBar returns the first row of the TUI, tagged with the active
-// section so a user running two stacked wznav panes (one per section)
-// can tell at a glance which is which.
-func (m *Model) titleBar() string {
-	switch m.section {
-	case SectionServers:
-		return " wznav — servers "
-	case SectionFiles:
-		return " wznav — files "
-	default:
-		return " wznav "
-	}
-}
-
-// sectionHeader returns the per-pane header line (with the ▶ marker
-// when the pane is focused). In single-section mode the other pane
-// is never rendered, so we don't have to worry about the unfocused
-// variant.
+// sectionHeader returns the compact, stable label for a pane. The files
+// header is the current path itself, left aligned with the pane border.
 func (m *Model) sectionHeader(p pane) string {
 	if p == paneServers {
-		if m.focus == paneServers {
-			return "▶ Servers"
-		}
-		return "Servers"
+		return "neilwz-servers"
 	}
 	if m.files == nil {
-		return "Files"
+		return "neilwz-files"
 	}
-	if m.focus == paneFiles {
-		return "▶ Files (" + m.files.Current + ")"
+	return m.displayPath()
+}
+
+func (m *Model) displayPath() string {
+	if m.files == nil {
+		return "neilwz-files"
 	}
-	return "Files (" + m.files.Current + ")"
+	path := m.files.Current
+	if home, err := os.UserHomeDir(); err == nil {
+		home, err = filepath.Abs(home)
+		if err == nil {
+			if path == home {
+				return "~"
+			}
+			if strings.HasPrefix(path, home+string(filepath.Separator)) {
+				return "~" + string(filepath.Separator) + strings.TrimPrefix(path, home+string(filepath.Separator))
+			}
+		}
+	}
+	return path
 }
 
 func (m *Model) renderServerRow(i int) string {
@@ -684,11 +680,9 @@ func (m *Model) renderServerRow(i int) string {
 	if e.Desc != "" {
 		desc = "  (" + e.Desc + ")"
 	}
-	label := e.Alias + desc
-	if e.Source == "extra" {
-		label += "  [extra]"
-	}
-	return trunc(pad(marker+label, m.width, ' '), m.width)
+	// Source labels are redundant in the compact server row; descriptions
+	// remain useful as they carry the human-friendly server context.
+	return truncRunes(pad(marker+e.Alias+desc, m.width, ' '), m.width)
 }
 
 func (m *Model) renderFileRow(i int) string {
@@ -704,13 +698,14 @@ func (m *Model) renderFileRow(i int) string {
 			marker = "▷ "
 		}
 	}
-	var label string
+	name := it.Name
 	if it.IsDir {
-		label = marker + it.Name + "/"
-	} else {
-		label = marker + it.Name
+		name += "/"
 	}
-	return trunc(pad(label, m.width, ' '), m.width)
+	// Icons occupy one terminal cell (two columns) and are followed by a
+	// fixed space, keeping names aligned across a long file list.
+	label := icon.Aligned(it.Name, it.IsDir, it.IsLink) + marker + name
+	return truncRunes(pad(label, m.width, ' '), m.width)
 }
 
 func (m *Model) statusLine() string {
@@ -722,7 +717,7 @@ func (m *Model) statusLine() string {
 	}
 	// In single-section mode there is only one pane, so "pane=N" is
 	// noise; we surface "mode=servers|files" instead to make it easy
-	// to tell two stacked wznav instances apart from the status line.
+	// to tell two stacked neilwz-nav-tui instances apart from the status line.
 	var left string
 	switch m.section {
 	case SectionServers, SectionFiles:
@@ -769,6 +764,17 @@ func trunc(s string, w int) string {
 		return s
 	}
 	return s[:w]
+}
+
+func truncRunes(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= w {
+		return s
+	}
+	return string(runes[:w])
 }
 
 func max(a, b int) int {

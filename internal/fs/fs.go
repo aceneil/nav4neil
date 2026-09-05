@@ -1,4 +1,4 @@
-// Package fs implements the local file browser used by wznav's lower pane.
+// Package fs implements the local file browser used by neilwz-nav-tui's lower pane.
 // It is intentionally small: read directory listing, sort, expose entries,
 // and answer a few navigation primitives (parent, into). It does NOT
 // recurse into subdirectories — the UI calls back into ListDir each time
@@ -20,6 +20,7 @@ import (
 type Item struct {
 	Name    string // base name, never includes the parent path
 	IsDir   bool
+	IsLink  bool // symlink (the target may be a directory)
 	Size    int64
 	ModTime int64 // unix seconds
 }
@@ -62,15 +63,21 @@ func (b *Browser) ListDir() ([]Item, error) {
 	var dirs, files []Item
 	for _, e := range ents {
 		// Skip unreadable entries silently.
-		info, ierr := e.Info()
-		if ierr != nil {
-			continue
+		var info os.FileInfo
+		var ierr error
+		if info, ierr = e.Info(); ierr != nil {
+			info = nil
+		}
+		size, modTime := int64(0), int64(0)
+		if info != nil {
+			size, modTime = info.Size(), info.ModTime().Unix()
 		}
 		it := Item{
 			Name:    e.Name(),
 			IsDir:   e.IsDir(),
-			Size:    info.Size(),
-			ModTime: info.ModTime().Unix(),
+			IsLink:  e.Type()&os.ModeSymlink != 0,
+			Size:    size,
+			ModTime: modTime,
 		}
 		if e.IsDir() {
 			dirs = append(dirs, it)

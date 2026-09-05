@@ -1,13 +1,13 @@
-// Package ws embeds a tiny local-only WebSocket server inside the wznav
+// Package ws embeds a tiny local-only WebSocket server inside the neilwz-nav-tui
 // binary. It is the v1 plumbing for the future "TUI ↔ daemon" channel
-// (the daemon role is just wznav itself for now). Endpoints exposed on
+// (the daemon role is just neilwz-nav-tui itself for now). Endpoints exposed on
 // 127.0.0.1:<port>:
 //
 //	GET /health    → JSON: {"ok":true,"pid":N,"context":"<ctx>","port":N}
 //	GET /context   → JSON: {"context":"<ctx>"}                  (read)
 //	POST /context  → JSON body: {"context":"<ctx>"}            (write)
 //
-// The server is best-effort: if port WZNAV_WS is busy it walks upward
+// The server is best-effort: if port NEILWZ_NAV_TUI_WS is busy it walks upward
 // (39771, 39772, ...) until one binds. On every failure it logs and
 // returns without killing the TUI.
 package ws
@@ -55,18 +55,18 @@ func New(initialContext string) *Server {
 
 // Start binds 127.0.0.1:<port>, walking upward on EADDRINUSE, then serves
 // HTTP in a goroutine until Stop is called or the listener is closed.
-// base may be overridden via the WZNAV_WS env var (e.g. "39771" or ":0").
+// base may be overridden via the NEILWZ_NAV_TUI_WS env var (e.g. "39771" or ":0").
 func (s *Server) Start(base int) error {
 	if base <= 0 {
 		base = DefaultPort
 	}
-	if v := strings.TrimSpace(os.Getenv("WZNAV_WS")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("NEILWZ_NAV_TUI_WS")); v != "" {
 		if v == ":0" {
 			base = 0
 		} else if n, err := strconv.Atoi(v); err == nil && n >= 0 && n < 65536 {
 			base = n
 		} else {
-			log.Printf("ws: WZNAV_WS=%q is not a valid port, ignoring", v)
+			log.Printf("ws: NEILWZ_NAV_TUI_WS=%q is not a valid port, ignoring", v)
 		}
 	}
 
@@ -151,7 +151,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"pid":     os.Getpid(),
 		"context": s.Context(),
 		"port":    s.port,
-		"version": "wznav-v1",
+		"version": "neilwz-nav-tui-v1",
 	})
 }
 
