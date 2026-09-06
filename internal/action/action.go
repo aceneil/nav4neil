@@ -80,6 +80,24 @@ func environmentTag() string {
 	return "no-zellij-or-zellij-bin"
 }
 
+// Tab returns the Zellij tab name that opening e creates (the exact value
+// passed to `zellij action new-tab --name`). The built-in localhost entry
+// always opens as "local"; ssh-config hosts keep their alias; servers.txt
+// entries prefer the part after '@' (via servers.TabName) and go through
+// sanitizeTab, matching the historical Build behaviour. Status polling
+// compares dump-layout tab names against Tab(e), so a row turns green
+// exactly when its own tab exists.
+func Tab(e servers.Entry) string {
+	if e.Source == "builtin" {
+		return "local"
+	}
+	tab := sanitizeTab(servers.TabName(e))
+	if tab == "" {
+		tab = "ssh"
+	}
+	return tab
+}
+
 // Build computes the Plan for connecting to e. It does not touch the
 // filesystem beyond looking at PATH.
 func Build(e servers.Entry) Plan {
@@ -88,18 +106,14 @@ func Build(e servers.Entry) Plan {
 		if _, err := exec.LookPath("fish"); err == nil {
 			shell = "fish"
 		}
+		tab := Tab(e) // built-in localhost opens as tab "local"
 		if InZellij() {
-			return Plan{UseZellij: true, TabName: "local", Argv: []string{"zellij", "action", "new-tab", "--name", "local", "--", shell}, Detected: "zellij"}
+			return Plan{UseZellij: true, TabName: tab, Argv: []string{"zellij", "action", "new-tab", "--name", tab, "--", shell}, Detected: "zellij"}
 		}
-		return Plan{UseZellij: false, TabName: "local", Argv: []string{shell}, Detected: "no-zellij"}
+		return Plan{UseZellij: false, TabName: tab, Argv: []string{shell}, Detected: "no-zellij"}
 	}
-	tab := servers.TabName(e)
+	tab := Tab(e)
 	target := servers.SSHArg(e)
-
-	tab = sanitizeTab(tab)
-	if tab == "" {
-		tab = "ssh"
-	}
 
 	sshTail, needSshpass := sshCommand(e)
 	if needSshpass {
@@ -159,9 +173,13 @@ func Build(e servers.Entry) Plan {
 	}
 }
 
-// Run executes the plan with a short timeout so a stuck ssh doesn't
-// hang the TUI forever. The TUI fires-and-forgets — failures are
-// reported through the returned error and surfaced in the status bar.
+// Run executes the plan. The command is awaited so a non-zero exit is
+// observed and reported (e.g. `zellij action new-tab` when no Zellij
+// server is reachable). A short overall timeout keeps a stuck child from
+// hanging the TUI; a child that is still running when the deadline hits is
+// treated as launched OK (CommandContext reaps it in the background), so
+// callers never block indefinitely. Failures are returned to the caller
+// and surfaced in the status bar / red status square.
 func Run(ctx context.Context, p Plan) error {
 	if len(p.Argv) == 0 {
 		return errors.New("action: empty argv")
@@ -176,11 +194,26 @@ func Run(ctx context.Context, p Plan) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("action: start %v: %w", p.Argv, err)
 	}
-	// Detach so the TUI is not blocked by the long-running ssh.
-	go func() {
-		_ = cmd.Wait()
-	}()
-	return nil
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		// The command exited on its own.
+		if err == nil {
+			return nil
+		}
+		// If the deadline fired first, the child was killed by our own
+		// timeout while still running — treat it as launched successfully.
+		if cctx.Err() != nil {
+			return nil
+		}
+		return fmt.Errorf("action: %v failed: %w", p.Argv, err)
+	case <-cctx.Done():
+		// Still running at the deadline (normally only possible for a
+		// long-lived child); treated as launched OK. Wait() in the
+		// goroutine reaps the process once CommandContext kills it.
+		return nil
+	}
 }
 
 // sanitizeTab strips characters that confuse Zellij / tmux / shells

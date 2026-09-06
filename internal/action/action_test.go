@@ -1,9 +1,11 @@
 package action
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/aceneil/nav4neil/internal/servers"
@@ -157,5 +159,90 @@ func TestBuild_InZellij_WrapsSshpassTail(t *testing.T) {
 	gotTail := p.Argv[len(p.Argv)-len(wantTail):]
 	if !reflect.DeepEqual(gotTail, wantTail) {
 		t.Fatalf("zellij argv tail = %v want %v (full %v)", gotTail, wantTail, p.Argv)
+	}
+}
+
+// TestTab_CanonicalNames pins down the tab-name rule used both when opening
+// a server (Build → new-tab --name) and when matching dump-layout tabs for
+// the M3 status squares. localhost must resolve to "local".
+func TestTab_CanonicalNames(t *testing.T) {
+	cases := []struct {
+		name string
+		e    servers.Entry
+		want string
+	}{
+		{"builtin localhost → local", servers.Entry{Alias: "localhost", Source: "builtin"}, "local"},
+		{"ssh alias kept", servers.Entry{Alias: "web01", Source: "ssh", SshAlias: "web01"}, "web01"},
+		{"extra root@db1 → db1", servers.Entry{Alias: "root@db1", Source: "extra", SshAlias: "root@db1"}, "db1"},
+		{"extra plain alias kept", servers.Entry{Alias: "jumpbox", Source: "extra", SshAlias: "jumpbox"}, "jumpbox"},
+		{"space sanitized to underscore", servers.Entry{Alias: "my host", Source: "ssh", SshAlias: "my host"}, "my_host"},
+		{"slash sanitized to underscore", servers.Entry{Alias: "a/b", Source: "ssh", SshAlias: "a/b"}, "a_b"},
+		{"all-punct alias falls back to ssh", servers.Entry{Alias: "///", Source: "ssh", SshAlias: "///"}, "ssh"},
+	}
+	for _, c := range cases {
+		if got := Tab(c.e); got != c.want {
+			t.Errorf("%s: Tab() = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestTab_AgreesWithBuild guarantees the poll matcher and the tab opener
+// can never disagree about which tab name a server uses.
+func TestTab_AgreesWithBuild(t *testing.T) {
+	t.Setenv("ZELLIJ", "1")
+	for _, e := range []servers.Entry{
+		{Alias: "localhost", Source: "builtin"},
+		{Alias: "github.com", Source: "ssh", SshAlias: "github.com"},
+		{Alias: "root@db1", Source: "extra", User: "root", Host: "10.0.0.5", Port: 2222, Password: "pw"},
+		{Alias: "my host", Source: "extra", SshAlias: "my host"},
+	} {
+		p := Build(e)
+		if p.TabName != Tab(e) {
+			t.Errorf("Build(%q).TabName = %q, Tab() = %q — must match", e.Alias, p.TabName, Tab(e))
+		}
+	}
+}
+
+// writeTool installs an executable with the given body in a temp dir and
+// returns its absolute path.
+func writeTool(t *testing.T, name, body string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestRun_ZeroExitIsSuccess(t *testing.T) {
+	tool := writeTool(t, "okcmd", "#!/bin/sh\nexit 0\n")
+	err := Run(context.Background(), Plan{Argv: []string{tool}})
+	if err != nil {
+		t.Fatalf("expected nil for exit 0, got %v", err)
+	}
+}
+
+func TestRun_NonZeroExitIsFailure(t *testing.T) {
+	tool := writeTool(t, "badcmd", "#!/bin/sh\nexit 3\n")
+	err := Run(context.Background(), Plan{Argv: []string{tool}})
+	if err == nil {
+		t.Fatalf("expected error for exit 3, got nil")
+	}
+	if !strings.Contains(err.Error(), "exit status 3") {
+		t.Fatalf("error should mention exit status 3: %v", err)
+	}
+}
+
+func TestRun_StartFailureIsFailure(t *testing.T) {
+	t.Setenv("PATH", emptyPathDir(t))
+	err := Run(context.Background(), Plan{Argv: []string{"definitely-not-a-real-tool"}})
+	if err == nil {
+		t.Fatalf("expected error for missing binary, got nil")
+	}
+}
+
+func TestRun_EmptyArgvIsFailure(t *testing.T) {
+	if err := Run(context.Background(), Plan{}); err == nil {
+		t.Fatalf("expected error for empty argv, got nil")
 	}
 }

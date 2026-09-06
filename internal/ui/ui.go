@@ -111,6 +111,15 @@ type Model struct {
 	serverCursor int
 	serverFilter string
 
+	// M3 connection-status squares: in-Zellij we poll dump-layout for open
+	// tab names; the ok/failed ledger below also drives the fallback mode
+	// (outside Zellij or when a poll fails).
+	inZellij bool            // set at startup: $ZELLIJ present → polling allowed
+	liveTabs bool            // last dump-layout poll succeeded (only meaningful inZellij)
+	tabsOpen map[string]bool // Zellij tab names seen by the last successful poll
+	svOK     map[string]bool // per alias: last open attempt succeeded (fallback green)
+	svFailed map[string]bool // per alias: last open attempt failed (red until cleared)
+
 	files      *fs.Browser
 	fileView   []fs.Item
 	fileCur    int
@@ -151,9 +160,12 @@ type Model struct {
 // nav4neil, no ReadDir for a servers-only one).
 func NewModel(startDir string, wss *ws.Server, section Section) *Model {
 	m := &Model{
-		section: section,
-		ctx:     "local",
-		wss:     wss,
+		section:  section,
+		ctx:      "local",
+		wss:      wss,
+		inZellij: action.InZellij(),
+		svOK:     map[string]bool{},
+		svFailed: map[string]bool{},
 	}
 	switch section {
 	case SectionServers:
@@ -175,10 +187,69 @@ func NewModel(startDir string, wss *ws.Server, section Section) *Model {
 // tickMsg drives the status-line auto-expiry.
 type tickMsg time.Time
 
+// tabsPollMsg carries the outcome of one `zellij action dump-layout` poll.
+// ok=false means the dump failed (fall back to the local open ledger);
+// tabs holds the open tab names when ok.
+type tabsPollMsg struct {
+	ok   bool
+	tabs []string
+}
+
+// Poll cadence for Zellij tab presence. The first poll fires quickly after
+// startup so status squares settle within a blink; later polls every 2.5s.
+const (
+	firstTabsPollDelay = 300 * time.Millisecond
+	tabsPollEvery      = 2500 * time.Millisecond
+)
+
 // Init is required by bubbletea. We tick every 750ms so the transient
-// status message can self-clear after a few seconds.
+// status message can self-clear after a few seconds, and — only when the
+// process runs inside Zellij — we also start the dump-layout poll loop.
 func (m *Model) Init() tea.Cmd {
-	return tea.Tick(750*time.Millisecond, func(t time.Time) tea.Msg { return tickMsg(t) })
+	cmds := []tea.Cmd{tea.Tick(750*time.Millisecond, func(t time.Time) tea.Msg { return tickMsg(t) })}
+	if poll := m.tabsPollCmd(firstTabsPollDelay); poll != nil {
+		cmds = append(cmds, poll)
+	}
+	return tea.Batch(cmds...)
+}
+
+// tabsPollCmd returns a command that sleeps for delay, runs
+// `zellij action dump-layout` (2s timeout) and reports the parsed tab names
+// as a tabsPollMsg. Outside Zellij it returns nil so the poll loop never
+// spins: the UI simply keeps showing the local ledger state. Failures are
+// silent — they flip ok=false and the caller falls back to the ledger.
+func (m *Model) tabsPollCmd(delay time.Duration) tea.Cmd {
+	if !m.inZellij {
+		return nil
+	}
+	return func() tea.Msg {
+		time.Sleep(delay)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "zellij", "action", "dump-layout").Output()
+		if err != nil {
+			return tabsPollMsg{ok: false}
+		}
+		return tabsPollMsg{ok: true, tabs: parseTabNames(string(out))}
+	}
+}
+
+// noteOpenResult updates the per-server ledger after one open attempt
+// (err == nil → success) or after a poll proves a tab is present again.
+func (m *Model) noteOpenResult(alias string, err error) {
+	if m.svOK == nil {
+		m.svOK = map[string]bool{}
+	}
+	if m.svFailed == nil {
+		m.svFailed = map[string]bool{}
+	}
+	if err != nil {
+		m.svFailed[alias] = true
+		delete(m.svOK, alias)
+		return
+	}
+	delete(m.svFailed, alias)
+	m.svOK[alias] = true
 }
 
 // ----- Update --------------------------------------------------------------
@@ -196,6 +267,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		// Every tick is a chance to clear stale status. We re-arm the timer.
 		return m, tea.Tick(750*time.Millisecond, func(t time.Time) tea.Msg { return tickMsg(t) })
+	case tabsPollMsg:
+		m.liveTabs = m.inZellij && msg.ok
+		m.tabsOpen = nil
+		if msg.ok {
+			m.tabsOpen = make(map[string]bool, len(msg.tabs))
+			for _, t := range msg.tabs {
+				m.tabsOpen[t] = true
+			}
+			// A tab being present proves the connection is up again: clear
+			// any pending red for that server (until the next failure).
+			for _, e := range m.serversAll {
+				if m.svFailed[e.Alias] && m.tabsOpen[action.Tab(e)] {
+					m.noteOpenResult(e.Alias, nil)
+				}
+			}
+		}
+		return m, m.tabsPollCmd(tabsPollEvery)
 	default:
 		return m, nil
 	}
@@ -556,8 +644,13 @@ func (m *Model) openSelectedServer() {
 		m.status = fmt.Sprintf("→ %s  (zellij=%s)", plan.TabName, plan.Detected)
 	}
 	if err := action.Run(context.Background(), plan); err != nil {
+		m.noteOpenResult(sel.Alias, err)
 		m.status = "exec failed: " + err.Error()
+		return
 	}
+	// Record the successful open: clears any red and — in fallback mode
+	// (outside Zellij / poll failing) — turns the square green.
+	m.noteOpenResult(sel.Alias, nil)
 }
 
 func (m *Model) enterSelectedFile() {
@@ -754,9 +847,16 @@ func (m *Model) renderServerRow(i int) string {
 	if e.Desc != "" {
 		desc = "  (" + e.Desc + ")"
 	}
-	// Source labels are redundant in the compact server row; descriptions
-	// remain useful as they carry the human-friendly server context.
-	return truncRunes(pad(marker+e.Alias+desc, m.width, ' '), m.width)
+	// M3 status square: one coloured cell + one space, then the existing
+	// pointer and name — "▮ ▶ name…" on the focused row. Colour escapes
+	// live only in the glyph cell; the padded body is plain text, so column
+	// alignment and truncation never see ANSI.
+	avail := m.width - 2
+	if avail < 1 {
+		avail = 1
+	}
+	body := truncRunes(padRunes(marker+e.Alias+desc, avail), avail)
+	return svGlyph(m.serverState(e)) + " " + body
 }
 
 func (m *Model) renderFileRow(i int) string {
@@ -840,6 +940,17 @@ func pad(s string, w int, fill byte) string {
 		return s
 	}
 	return s + strings.Repeat(string(fill), w-len(s))
+}
+
+// padRunes pads s with trailing spaces until it occupies w runes (terminal
+// cells). Unlike pad it counts multibyte glyphs — e.g. the ▶ pointer — as a
+// single cell, so rows keep their exact intended width.
+func padRunes(s string, w int) string {
+	n := len([]rune(s))
+	if n >= w {
+		return s
+	}
+	return s + strings.Repeat(" ", w-n)
 }
 
 func blank(w int) string {

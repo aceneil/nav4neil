@@ -20,6 +20,8 @@
 - 带密码的条目用 `sshpass -p <pw> ssh -p <port> <user>@<host>` 连接；
   系统缺少 `sshpass` 时状态栏提示安装；无密码走原有 ssh 逻辑
   （`zellij action new-tab` / 直连）。
+- 服务器行首显示连接状态小方块（Zellij tab 轮询 + 失败记账，见下文
+  「服务器状态方块」）。
 - 文件区段支持目录进入/返回、过滤、刷新、鼠标点击与 Nerd Font 文件图标。
 - 在 Zellij 内选择服务器时执行 `zellij action new-tab --name <tab> -- ssh <target>`，
   不替换当前 pane。
@@ -85,7 +87,28 @@ layout {
 文件区段以 `~` 表示 `$HOME`，超长路径从左侧截断。`both` 布局中
 `neilwz-servers` 是服务器 pane 头行；`servers` 单区模式则以
 `serv4neil` 标题行 + `[NEW] [EDIT]` 操作行开头，不使用装饰性虚线。
-服务器选中行保留 `▶`/`▷` 指示；文件行在名称前显示 Nerd Font 图标。
+服务器行以状态小方块开头，选中行保留 `▶`/`▷` 指示（聚焦行显示为
+`▮ ▶ 名称…`，未聚焦/未选中行以空格占位保持名称列对齐）；文件行在
+名称前显示 Nerd Font 图标。
+
+## 服务器状态方块
+
+服务器列表每行最前面有一个小方块，指示该服务器此刻的连接状态：
+
+| 方块 | 含义 |
+| --- | --- |
+| ▮ 绿 | Zellij 中正开着该服务器对应的 tab（约 2.5 s 轮询一次 `zellij action dump-layout`；仅当本进程运行在 Zellij 内时启用） |
+| ▮ 黄 | 无对应 tab / 尚未打开（默认） |
+| ▮ 红 | 最近一次打开该服务器失败或异常；下一次成功打开、或对应 tab 重新出现后自动清除 |
+
+服务器条目到 tab 名的映射与打开时 `zellij action new-tab --name` 完全
+一致：内置 `localhost` 对应 tab 名 `local`，ssh 条目用别名，servers.txt
+条目取 `user@host` 中 `@` 之后的部分（`root@db1` → `db1`）。
+
+不在 Zellij 内或轮询失败时自动退回本地记账：打开成功记绿、打开失败
+（命令无法启动或非零退出）记红。轮询只读、静默失败、不阻塞 UI，并带
+2 s 超时。小方块用 256 色 ANSI 渲染（truecolor 终端同样兼容）；最窄
+环境（`TERM=dumb`、`NO_COLOR` 或未设置 `TERM`）下退化为无色 `·`。
 
 ## 快捷键
 
