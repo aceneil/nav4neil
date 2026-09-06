@@ -62,8 +62,7 @@ func TestModel_RebuildServerView_EmptyAfterFilter(t *testing.T) {
 func TestModel_ServerPaneRendersMarker(t *testing.T) {
 	m := NewModel("/tmp", nil, SectionBoth)
 	m.serversAll = []servers.Entry{{Alias: "testhost", Source: "ssh", SshAlias: "testhost"}}
-	m.serversView = m.serversAll
-	m.serverCursor = 0
+	m.rebuildServerView()
 	m.width = 40
 	m.height = 12
 	v := m.View()

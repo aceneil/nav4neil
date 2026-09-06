@@ -100,17 +100,25 @@ func Tab(e servers.Entry) string {
 
 // Build computes the Plan for connecting to e. It does not touch the
 // filesystem beyond looking at PATH.
+//
+// The built-in localhost never opens a new tab: inside Zellij the plan moves
+// focus to the pane on the right (the pane that hosts the local shell);
+// outside Zellij the plan is a hint-only no-op (no argv) so the TUI can tell
+// the user there is no pane layout to steer. All other servers keep the
+// historical new-tab behaviour.
 func Build(e servers.Entry) Plan {
 	if e.Source == "builtin" {
-		shell := "bash"
-		if _, err := exec.LookPath("fish"); err == nil {
-			shell = "fish"
-		}
-		tab := Tab(e) // built-in localhost opens as tab "local"
+		tab := Tab(e) // "local"
 		if InZellij() {
-			return Plan{UseZellij: true, TabName: tab, Argv: []string{"zellij", "action", "new-tab", "--name", tab, "--", shell}, Detected: "zellij"}
+			return Plan{
+				UseZellij: true,
+				TabName:   tab,
+				SshTarget: "local",
+				Argv:      []string{"zellij", "action", "move-focus", "right"},
+				Detected:  "zellij",
+			}
 		}
-		return Plan{UseZellij: false, TabName: tab, Argv: []string{shell}, Detected: "no-zellij"}
+		return Plan{UseZellij: false, TabName: tab, SshTarget: "local", Detected: "no-zellij"}
 	}
 	tab := Tab(e)
 	target := servers.SSHArg(e)
@@ -170,6 +178,20 @@ func Build(e servers.Entry) Plan {
 			"--",
 		}, sshTail...),
 		Detected: "zellij",
+	}
+}
+
+// LocalhostPlan returns the plan the TUI executes for the built-in
+// localhost row: `zellij action move-focus right`, which moves focus to the
+// pane to the right — in the nav4neil layout the local shell. Callers must
+// gate on InZellij() first; outside Zellij there is no pane layout to steer.
+func LocalhostPlan() Plan {
+	return Plan{
+		UseZellij: true,
+		TabName:   "local",
+		SshTarget: "local",
+		Argv:      []string{"zellij", "action", "move-focus", "right"},
+		Detected:  "zellij",
 	}
 }
 

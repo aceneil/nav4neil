@@ -266,6 +266,15 @@ func (m *Model) enableForm() {
 		return
 	}
 
+	// A saved row must be visible: expand its group folder so the cursor can
+	// land on it right after the reload.
+	if group != "" {
+		if m.collapsed == nil {
+			m.collapsed = map[string]bool{}
+		}
+		delete(m.collapsed, group)
+	}
+
 	m.form = nil
 	m.reloadServers()
 	for i, e := range m.serversView {
@@ -274,6 +283,7 @@ func (m *Model) enableForm() {
 			break
 		}
 	}
+	m.snapCursorToSelection()
 	m.status = "saved " + name
 }
 

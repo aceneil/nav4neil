@@ -98,6 +98,54 @@ func (s Section) String() string {
 	}
 }
 
+// srvRowKind identifies one focusable row of the servers pane list.
+type srvRowKind int
+
+const (
+	srvRowNew   srvRowKind = iota // [NEW] pseudo entry (SectionServers only)
+	srvRowEdit                    // [EDIT] pseudo entry (SectionServers only)
+	srvRowEntry                   // a real server entry (flat or inside a group)
+	srvRowGroup                   // a group folder, ▾ expanded / ▸ collapsed
+)
+
+// srvRow is one focusable row of the servers pane. entry is valid for
+// srvRowEntry; group labels the folder for srvRowGroup (children reuse the
+// same group value so rendering can indent them).
+type srvRow struct {
+	kind  srvRowKind
+	entry servers.Entry // srvRowEntry only
+	group string        // srvRowGroup label / srvRowEntry parent group
+}
+
+// rowIdentity is a stable handle for one row across rebuilds, so collapsing
+// a folder, filtering, or refreshing keeps the display cursor on the same
+// item (or its nearest surviving equivalent) instead of jumping to row 0.
+type rowIdentity struct {
+	kind srvRowKind
+	key  string // entry alias or group label
+}
+
+func (m *Model) identityOf(row srvRow) rowIdentity {
+	switch row.kind {
+	case srvRowEntry:
+		return rowIdentity{kind: srvRowEntry, key: row.entry.Alias}
+	case srvRowGroup:
+		return rowIdentity{kind: srvRowGroup, key: row.group}
+	default:
+		return rowIdentity{kind: row.kind}
+	}
+}
+
+// findRowIdentity returns the first row index matching id, or -1.
+func (m *Model) findRowIdentity(id rowIdentity) int {
+	for i, r := range m.srvRows {
+		if m.identityOf(r) == id {
+			return i
+		}
+	}
+	return -1
+}
+
 // Model is the bubbletea model. All state lives here; bubbletea guarantees
 // single-threaded Update access.
 type Model struct {
@@ -110,6 +158,19 @@ type Model struct {
 	serversView  []servers.Entry
 	serverCursor int
 	serverFilter string
+
+	// M4 row model: the servers pane is rendered as an ordered list of
+	// focusable rows — [NEW]/[EDIT] pseudo entries (single-section mode
+	// only), ungrouped "flat" entries, then ▾/▸ group folders with their
+	// children. srvCursor indexes srvRows and drives highlighting;
+	// serverCursor keeps the selected ENTRY inside serversView so open/edit
+	// actions keep working while the display cursor rests on an ops or
+	// folder row. srvTop scrolls the window when a grouped list grows
+	// taller than the pane.
+	srvRows   []srvRow
+	srvCursor int
+	srvTop    int
+	collapsed map[string]bool // group name → folded (children hidden)
 
 	// M3 connection-status squares: in-Zellij we poll dump-layout for open
 	// tab names; the ok/failed ledger below also drives the fallback mode
@@ -363,7 +424,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func helpText(s Section) string {
 	switch s {
 	case SectionServers:
-		return "j/k move · enter connect · n new · e edit · / filter · r refresh · ? help · q quit"
+		return "j/k move (new/edit reachable) · enter open or fold group · n new · e edit · / filter · r refresh · ? help · q quit"
 	case SectionFiles:
 		return "j/k move · enter open · h/l parent/into · / filter · r refresh dir · ? help · q quit"
 	default:
@@ -374,36 +435,113 @@ func helpText(s Section) string {
 func (m *Model) handleServersKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "j", "down":
-		if m.serverCursor < len(m.serversView)-1 {
-			m.serverCursor++
-		}
+		m.moveSrvCursor(1)
 	case "k", "up":
-		if m.serverCursor > 0 {
-			m.serverCursor--
-		}
+		m.moveSrvCursor(-1)
 	case "g":
-		m.serverCursor = 0
+		m.jumpSrvFirstEntry()
 	case "G":
-		if len(m.serversView) > 0 {
-			m.serverCursor = len(m.serversView) - 1
+		if n := len(m.srvRows); n > 0 {
+			m.srvCursor = n - 1
+			m.syncSelectionToRow()
 		}
 	case "n", "N":
 		m.openServerForm(servers.Entry{Source: "extra"}, false)
 	case "e", "E":
 		m.editSelectedServer()
 	case "enter":
-		m.openSelectedServer()
+		m.activateServerRow()
 	}
 	return m, nil
 }
 
-// editSelectedServer opens the EDIT overlay for the current row. Only
+// moveSrvCursor steps the display cursor by d (±1), wrapping around the row
+// list so ↑/↓ (j/k) cycle NEW → EDIT → first server → … → last → NEW.
+func (m *Model) moveSrvCursor(d int) {
+	n := len(m.srvRows)
+	if n == 0 {
+		return
+	}
+	m.srvCursor = (m.srvCursor + d + n) % n
+	m.syncSelectionToRow()
+}
+
+// jumpSrvFirstEntry sends the cursor to the first real server row, skipping
+// the [NEW]/[EDIT] pseudo entries (localhost is the very first entry).
+func (m *Model) jumpSrvFirstEntry() {
+	for i, r := range m.srvRows {
+		if r.kind == srvRowEntry {
+			m.srvCursor = i
+			m.syncSelectionToRow()
+			return
+		}
+	}
+	m.srvCursor = 0
+}
+
+// syncSelectionToRow keeps serverCursor (the selected entry used by open and
+// edit actions) aligned with the display cursor whenever it rests on an
+// entry row. Ops and folder rows leave the selection untouched so actions
+// still target the last real server the user visited.
+func (m *Model) syncSelectionToRow() {
+	if m.srvCursor < 0 || m.srvCursor >= len(m.srvRows) {
+		return
+	}
+	r := m.srvRows[m.srvCursor]
+	if r.kind != srvRowEntry {
+		return
+	}
+	for i, e := range m.serversView {
+		if e.Alias == r.entry.Alias {
+			m.serverCursor = i
+			return
+		}
+	}
+}
+
+// activateServerRow runs the action of the row under the display cursor:
+// NEW/EDIT open their overlays, a folder row toggles collapse, an entry row
+// connects to the server.
+func (m *Model) activateServerRow() {
+	if len(m.srvRows) == 0 {
+		m.status = "no servers to open (refresh with r)"
+		return
+	}
+	r := m.srvRows[m.srvCursor]
+	switch r.kind {
+	case srvRowNew:
+		m.openServerForm(servers.Entry{Source: "extra"}, false)
+	case srvRowEdit:
+		m.editSelectedServer()
+	case srvRowGroup:
+		m.toggleGroup(r.group)
+	case srvRowEntry:
+		m.openEntry(r.entry)
+	}
+}
+
+// toggleGroup folds/unfolds a group folder and keeps the cursor on it.
+func (m *Model) toggleGroup(g string) {
+	if m.collapsed == nil {
+		m.collapsed = map[string]bool{}
+	}
+	m.collapsed[g] = !m.collapsed[g]
+	m.rebuildServerRows()
+	if i := m.findRowIdentity(rowIdentity{kind: srvRowGroup, key: g}); i >= 0 {
+		m.srvCursor = i
+	}
+}
+
+// editSelectedServer opens the EDIT overlay for the selected row. Only
 // servers.txt-managed rows (Source "extra") are editable: ssh-config hosts
 // and the built-in localhost get an explanatory hint instead.
 func (m *Model) editSelectedServer() {
 	if len(m.serversView) == 0 {
 		m.status = "nothing to edit"
 		return
+	}
+	if m.serverCursor < 0 || m.serverCursor >= len(m.serversView) {
+		m.serverCursor = clamp(m.serverCursor, 0, max(0, len(m.serversView)-1))
 	}
 	sel := m.serversView[m.serverCursor]
 	switch sel.Source {
@@ -500,18 +638,118 @@ func (m *Model) rebuildServerView() {
 	q := strings.ToLower(m.serverFilter)
 	if q == "" {
 		m.serversView = append([]servers.Entry(nil), m.serversAll...)
-		m.serverCursor = clamp(m.serverCursor, 0, max(0, len(m.serversView)-1))
-		return
+	} else {
+		var out []servers.Entry
+		for _, e := range m.serversAll {
+			if strings.Contains(strings.ToLower(e.Alias), q) ||
+				strings.Contains(strings.ToLower(e.Desc), q) {
+				out = append(out, e)
+			}
+		}
+		m.serversView = out
 	}
-	var out []servers.Entry
-	for _, e := range m.serversAll {
-		if strings.Contains(strings.ToLower(e.Alias), q) ||
-			strings.Contains(strings.ToLower(e.Desc), q) {
-			out = append(out, e)
+	m.serverCursor = clamp(m.serverCursor, 0, max(0, len(m.serversView)-1))
+	m.rebuildServerRows()
+}
+
+// rebuildServerRows builds the focusable row list from serversView:
+//
+//   - SectionServers mode prepends the [NEW] and [EDIT] pseudo rows;
+//   - an active filter flattens every match (groups are skipped so a partial
+//     match list stays navigable);
+//   - otherwise ungrouped entries are listed first (localhost stays the very
+//     first row), followed by one ▾/▸ folder per group — in first-appearance
+//     order — whose children appear only while the folder is expanded.
+//
+// The display cursor is restored by row identity, falling back to the
+// current selection and finally to the first entry row.
+func (m *Model) rebuildServerRows() {
+	prev := rowIdentity{}
+	havePrev := len(m.srvRows) > 0 && m.srvCursor >= 0 && m.srvCursor < len(m.srvRows)
+	if havePrev {
+		prev = m.identityOf(m.srvRows[m.srvCursor])
+	}
+	q := strings.ToLower(m.serverFilter)
+	var rows []srvRow
+	if m.section == SectionServers {
+		rows = append(rows, srvRow{kind: srvRowNew}, srvRow{kind: srvRowEdit})
+	}
+	if q != "" {
+		for _, e := range m.serversView {
+			rows = append(rows, srvRow{kind: srvRowEntry, entry: e})
+		}
+	} else {
+		for _, e := range m.serversView {
+			if e.Group == "" {
+				rows = append(rows, srvRow{kind: srvRowEntry, entry: e})
+			}
+		}
+		var groups []string
+		seen := map[string]bool{}
+		for _, e := range m.serversView {
+			if e.Group == "" || seen[e.Group] {
+				continue
+			}
+			seen[e.Group] = true
+			groups = append(groups, e.Group)
+		}
+		for _, g := range groups {
+			rows = append(rows, srvRow{kind: srvRowGroup, group: g})
+			if m.collapsed[g] {
+				continue
+			}
+			for _, e := range m.serversView {
+				if e.Group == g {
+					rows = append(rows, srvRow{kind: srvRowEntry, entry: e, group: g})
+				}
+			}
 		}
 	}
-	m.serversView = out
-	m.serverCursor = clamp(m.serverCursor, 0, max(0, len(m.serversView)-1))
+	m.srvRows = rows
+	m.srvCursor = -1
+	if havePrev {
+		m.srvCursor = m.findRowIdentity(prev)
+	}
+	if m.srvCursor < 0 {
+		m.srvCursor = m.fallbackCursorRow()
+	}
+	m.srvCursor = clamp(m.srvCursor, 0, max(0, len(m.srvRows)-1))
+}
+
+// fallbackCursorRow picks where the display cursor should sit when the old
+// row vanished (filter change, refresh, group collapse): the row of the
+// currently selected entry, else the first entry row, else row 0.
+func (m *Model) fallbackCursorRow() int {
+	if m.serverCursor >= 0 && m.serverCursor < len(m.serversView) {
+		alias := m.serversView[m.serverCursor].Alias
+		for i, r := range m.srvRows {
+			if r.kind == srvRowEntry && r.entry.Alias == alias {
+				return i
+			}
+		}
+	}
+	for i, r := range m.srvRows {
+		if r.kind == srvRowEntry {
+			return i
+		}
+	}
+	return 0
+}
+
+// snapCursorToSelection moves the display cursor onto the row of the entry
+// that serverCursor selects (used after save/reload when the selection
+// index changed but rows were already rebuilt).
+func (m *Model) snapCursorToSelection() {
+	if m.serverCursor >= 0 && m.serverCursor < len(m.serversView) {
+		alias := m.serversView[m.serverCursor].Alias
+		for i, r := range m.srvRows {
+			if r.kind == srvRowEntry && r.entry.Alias == alias {
+				m.srvCursor = i
+				return
+			}
+		}
+	}
+	m.srvCursor = m.fallbackCursorRow()
 }
 
 func (m *Model) rebuildFileView() {
@@ -549,22 +787,13 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.lastClickY = msg.Y
 		switch m.section {
 		case SectionServers:
-			// Row 0 is the product title; row 1 is [NEW] [EDIT]; rows >= 2
-			// are the server list; the final row is the status bar.
-			if y == 1 {
-				switch opsRowHit(msg.X) {
-				case "new":
-					m.openServerForm(servers.Entry{Source: "extra"}, false)
-				case "edit":
-					m.editSelectedServer()
-				}
-				return m, nil
-			}
-			if y >= 2 && y < m.height-1 {
-				m.serverCursor = clamp(y-2, 0, max(0, len(m.serversView)-1))
-				if double {
-					m.openSelectedServer()
-				}
+			// Row 0 is the product title; the whole remaining area above the
+			// status bar is the focusable row list (starting with the [NEW]
+			// and [EDIT] pseudo rows). A single click on NEW/EDIT activates
+			// the action; entry rows select on click and open on double
+			// click; folder rows select on click and fold on double click.
+			if y >= 1 && y < m.height-1 {
+				m.clickServerListRow(y-1, double)
 			}
 			return m, nil
 		case SectionFiles:
@@ -579,10 +808,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		// SectionBoth: server rows start immediately after the server header.
 		if y >= 1 && y < m.serverListEnd() {
 			m.focus = paneServers
-			m.serverCursor = clamp(y-1, 0, max(0, len(m.serversView)-1))
-			if double {
-				m.openSelectedServer()
-			}
+			m.clickServerListRow(y-1, double)
 			return m, nil
 		}
 		if y >= m.serverListEnd()+2 && y < m.height-1 {
@@ -606,6 +832,57 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// clickServerListRow maps a click at visual row vis (0 = first row of the
+// servers list area, taking the scroll offset into account) onto the row
+// model and applies the row's mouse behaviour. double distinguishes the
+// second click of a double-click pair.
+func (m *Model) clickServerListRow(vis int, double bool) {
+	if len(m.srvRows) == 0 {
+		return
+	}
+	abs := m.srvTop + vis
+	if abs >= len(m.srvRows) {
+		abs = len(m.srvRows) - 1
+	}
+	if abs < 0 {
+		abs = 0
+	}
+	m.srvCursor = abs
+	r := m.srvRows[abs]
+	switch r.kind {
+	case srvRowNew:
+		m.openServerForm(servers.Entry{Source: "extra"}, false)
+	case srvRowEdit:
+		m.editSelectedServer()
+	case srvRowGroup:
+		m.syncSelectionToRow()
+		if double {
+			m.toggleGroup(r.group)
+		}
+	case srvRowEntry:
+		m.syncSelectionToRow()
+		if double {
+			m.openEntry(r.entry)
+		}
+	}
+}
+
+// clampSrvTop keeps the scroll window anchored on the display cursor when
+// the row list is taller than the visible area (vis rows fit).
+func (m *Model) clampSrvTop(vis int) {
+	n := len(m.srvRows)
+	if n <= vis || vis <= 0 {
+		m.srvTop = 0
+		return
+	}
+	if m.srvCursor < m.srvTop {
+		m.srvTop = m.srvCursor
+	}
+	if m.srvCursor >= m.srvTop+vis {
+		m.srvTop = m.srvCursor - vis + 1
+	}
+}
+
 // serverListEnd returns the row index of the section divider (between
 // servers and the file header). Layout:
 // server header (0), servers (1..sEnd-1), divider (sEnd),
@@ -621,36 +898,72 @@ func (m *Model) serverListEnd() int {
 
 // ----- Operations ----------------------------------------------------------
 
+// openSelectedServer opens the currently selected server entry (kept as the
+// entry-level entry point used by tests and legacy callers; keyboard Enter
+// goes through activateServerRow so ops/folder rows get their own actions).
 func (m *Model) openSelectedServer() {
 	if len(m.serversView) == 0 {
 		m.status = "no servers to open (refresh with r)"
 		return
 	}
-	sel := m.serversView[m.serverCursor]
-	plan := action.Build(sel)
+	if m.serverCursor < 0 || m.serverCursor >= len(m.serversView) {
+		m.serverCursor = clamp(m.serverCursor, 0, max(0, len(m.serversView)-1))
+	}
+	m.openEntry(m.serversView[m.serverCursor])
+}
+
+// openEntry connects to one real server row. The built-in localhost never
+// opens a new tab: inside Zellij it moves focus to the pane on the right
+// (the local shell), outside Zellij it only explains itself in the status
+// bar. Every other entry keeps the historical new-tab behaviour.
+func (m *Model) openEntry(e servers.Entry) {
+	if e.Source == "builtin" {
+		m.openLocalhost()
+		return
+	}
+	plan := action.Build(e)
 	if plan.NeedSshpass {
 		// A password is stored for this server but sshpass is not on PATH:
 		// do not launch anything — tell the user how to fix it.
 		m.status = "password set but sshpass missing — sudo apt install sshpass (or use keys)"
 		return
 	}
-	m.ctx = servers.TabName(sel)
+	m.ctx = servers.TabName(e)
 	if m.wss != nil {
 		m.wss.SetContext(m.ctx)
 	}
-	if sel.Source == "builtin" && !plan.UseZellij {
-		m.status = "localhost: opened shell in current pane (not Zellij)"
-	} else {
-		m.status = fmt.Sprintf("→ %s  (zellij=%s)", plan.TabName, plan.Detected)
-	}
+	m.status = fmt.Sprintf("→ %s  (zellij=%s)", plan.TabName, plan.Detected)
 	if err := action.Run(context.Background(), plan); err != nil {
-		m.noteOpenResult(sel.Alias, err)
+		m.noteOpenResult(e.Alias, err)
 		m.status = "exec failed: " + err.Error()
 		return
 	}
 	// Record the successful open: clears any red and — in fallback mode
 	// (outside Zellij / poll failing) — turns the square green.
-	m.noteOpenResult(sel.Alias, nil)
+	m.noteOpenResult(e.Alias, nil)
+}
+
+// openLocalhost implements the M4 localhost behaviour: instead of opening a
+// full-screen new tab, focus the right-hand pane (which is the local shell)
+// with `zellij action move-focus right`. Outside Zellij there is no pane
+// layout to steer, so we surface a status-bar hint only.
+func (m *Model) openLocalhost() {
+	if !action.InZellij() {
+		m.status = "localhost: not inside Zellij — focus the local shell pane manually"
+		return
+	}
+	plan := action.LocalhostPlan()
+	m.ctx = "local"
+	if m.wss != nil {
+		m.wss.SetContext(m.ctx)
+	}
+	if err := action.Run(context.Background(), plan); err != nil {
+		m.noteOpenResult("localhost", err)
+		m.status = "exec failed: " + err.Error()
+		return
+	}
+	m.noteOpenResult("localhost", nil)
+	m.status = "→ local shell (move-focus right)"
 }
 
 func (m *Model) enterSelectedFile() {
@@ -734,16 +1047,16 @@ func (m *Model) View() string {
 	// This keeps stacked Zellij panes compact and avoids decorative borders.
 	switch m.section {
 	case SectionServers:
-		// Single servers mode: product title row, [NEW] [EDIT] ops row,
-		// then the server list fills the remaining height above the status.
+		// Single servers mode: product title row, then the focusable row
+		// list (starting with the [NEW]/[EDIT] pseudo rows) filling the
+		// remaining height above the status.
 		b.WriteString(truncRunes(serversTitle(), m.width))
 		b.WriteByte('\n')
-		b.WriteString(truncRunes(serversOpsBar(), m.width))
-		b.WriteByte('\n')
-		rows := m.height - 3
+		rows := m.height - 2
 		if rows < 1 {
 			rows = 1
 		}
+		m.clampSrvTop(rows)
 		for i := 0; i < rows; i++ {
 			b.WriteString(m.renderServerRow(i))
 			if i < rows-1 {
@@ -769,6 +1082,7 @@ func (m *Model) View() string {
 		b.WriteString(truncRunes(m.sectionHeader(paneServers), m.width))
 		b.WriteByte('\n')
 		serverH := sEnd - 1
+		m.clampSrvTop(serverH)
 		for i := 0; i < serverH; i++ {
 			b.WriteString(m.renderServerRow(i))
 			b.WriteByte('\n')
@@ -830,13 +1144,38 @@ func (m *Model) displayPath() string {
 	return path
 }
 
+// renderServerRow draws the row at visual index i of the servers pane
+// (absolute row srvTop+i once the row model is built). When srvRows is
+// empty — raw models built directly in tests, or legacy callers — it falls
+// back to the plain entry list so rendering stays deterministic.
 func (m *Model) renderServerRow(i int) string {
+	if len(m.srvRows) > 0 {
+		abs := m.srvTop + i
+		if abs < 0 || abs >= len(m.srvRows) {
+			return blank(m.width)
+		}
+		r := m.srvRows[abs]
+		switch r.kind {
+		case srvRowNew, srvRowEdit:
+			return m.renderOpsRow(r, abs == m.srvCursor)
+		case srvRowGroup:
+			return m.renderFolderRow(r.group, abs == m.srvCursor)
+		default:
+			return m.renderEntryRow(r.entry, r.group != "", abs == m.srvCursor)
+		}
+	}
 	if i >= len(m.serversView) {
 		return blank(m.width)
 	}
-	e := m.serversView[i]
+	return m.renderEntryRow(m.serversView[i], false, i == m.serverCursor)
+}
+
+// renderEntryRow renders one server entry. Flat rows and group children share
+// the historical layout — status square + pointer + alias — while children
+// are indented two cells so their names align under the group folder label.
+func (m *Model) renderEntryRow(e servers.Entry, child, focused bool) string {
 	marker := "  "
-	if i == m.serverCursor {
+	if focused {
 		if m.focus == paneServers {
 			marker = "▶ "
 		} else {
@@ -855,8 +1194,60 @@ func (m *Model) renderServerRow(i int) string {
 	if avail < 1 {
 		avail = 1
 	}
-	body := truncRunes(padRunes(marker+e.Alias+desc, avail), avail)
+	name := e.Alias
+	if child {
+		name = "  " + name
+	}
+	body := truncRunes(padRunes(marker+name+desc, avail), avail)
 	return svGlyph(m.serverState(e)) + " " + body
+}
+
+// renderOpsRow renders the [NEW]/[EDIT] pseudo rows at the top of the
+// servers list. Both share the pointer column with server rows; the label
+// itself (bracketed, like the historical ops bar) is the focus affordance.
+func (m *Model) renderOpsRow(r srvRow, focused bool) string {
+	marker := "  "
+	if focused {
+		if m.focus == paneServers {
+			marker = "▶ "
+		} else {
+			marker = "▷ "
+		}
+	}
+	label := "[NEW]"
+	if r.kind == srvRowEdit {
+		label = "[EDIT]"
+	}
+	avail := m.width - 2
+	if avail < 1 {
+		avail = 1
+	}
+	body := truncRunes(padRunes(marker+label, avail), avail)
+	return "  " + body
+}
+
+// renderFolderRow renders a group folder: "▾ group/" while expanded,
+// "▸ group/" while collapsed. The folder occupies the glyph slot with two
+// spaces so the pointer column stays aligned with server rows.
+func (m *Model) renderFolderRow(group string, focused bool) string {
+	marker := "  "
+	if focused {
+		if m.focus == paneServers {
+			marker = "▶ "
+		} else {
+			marker = "▷ "
+		}
+	}
+	arrow := "▾ "
+	if m.collapsed[group] {
+		arrow = "▸ "
+	}
+	avail := m.width - 2
+	if avail < 1 {
+		avail = 1
+	}
+	body := truncRunes(padRunes(marker+arrow+group+"/", avail), avail)
+	return "  " + body
 }
 
 func (m *Model) renderFileRow(i int) string {
@@ -918,22 +1309,6 @@ func (m *Model) wssURL() string {
 
 // serversTitle is the single-section servers product title (row 0).
 func serversTitle() string { return "serv4neil" }
-
-// serversOpsBar renders the [NEW] [EDIT] action row (row 1). The two hit
-// zones used by opsRowHit must match these offsets.
-func serversOpsBar() string { return " [NEW]  [EDIT]" }
-
-// opsRowHit maps an x coordinate on the servers ops row to a button:
-// "new", "edit" or "" (outside both zones).
-func opsRowHit(x int) string {
-	switch {
-	case x >= 1 && x < 6:
-		return "new"
-	case x >= 8 && x < 14:
-		return "edit"
-	}
-	return ""
-}
 
 func pad(s string, w int, fill byte) string {
 	if len(s) >= w {

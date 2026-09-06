@@ -214,6 +214,62 @@ func writeTool(t *testing.T, name, body string) string {
 	return p
 }
 
+// TestBuild_LocalhostInsideZellijMovesFocusRight pins the M4 localhost
+// behaviour: inside Zellij the built-in row must NOT open a new tab; it
+// issues `zellij action move-focus right` so the local shell pane (right of
+// the sidebar) takes focus.
+func TestBuild_LocalhostInsideZellijMovesFocusRight(t *testing.T) {
+	t.Setenv("ZELLIJ", "1")
+	p := Build(servers.Entry{Alias: "localhost", Source: "builtin"})
+	if !p.UseZellij {
+		t.Fatalf("inside zellij: UseZellij must be true: %+v", p)
+	}
+	want := []string{"zellij", "action", "move-focus", "right"}
+	if !reflect.DeepEqual(p.Argv, want) {
+		t.Fatalf("Argv = %v, want %v (no new-tab for localhost)", p.Argv, want)
+	}
+	for _, bad := range []string{"new-tab", "bash", "fish"} {
+		for _, a := range p.Argv {
+			if a == bad {
+				t.Fatalf("localhost plan must not contain %q: %v", bad, p.Argv)
+			}
+		}
+	}
+	if p.TabName != "local" || p.Detected != "zellij" {
+		t.Fatalf("metadata wrong: %+v", p)
+	}
+}
+
+// TestBuild_LocalhostOutsideZellijIsHintOnly: with no Zellij session there is
+// no pane layout to steer, so the plan is a no-op (empty argv, UseZellij
+// false) that the TUI turns into a status-bar hint instead of running.
+func TestBuild_LocalhostOutsideZellijIsHintOnly(t *testing.T) {
+	t.Setenv("ZELLIJ", "")
+	t.Setenv("PATH", emptyPathDir(t))
+	p := Build(servers.Entry{Alias: "localhost", Source: "builtin"})
+	if p.UseZellij {
+		t.Fatalf("outside zellij: UseZellij must be false: %+v", p)
+	}
+	if len(p.Argv) != 0 {
+		t.Fatalf("outside zellij: plan must be a hint-only no-op, got argv %v", p.Argv)
+	}
+	if p.Detected != "no-zellij" {
+		t.Fatalf("Detected = %q, want no-zellij", p.Detected)
+	}
+}
+
+// TestLocalhostPlan_Shape documents the exported plan used by the TUI layer.
+func TestLocalhostPlan_Shape(t *testing.T) {
+	p := LocalhostPlan()
+	want := []string{"zellij", "action", "move-focus", "right"}
+	if !reflect.DeepEqual(p.Argv, want) {
+		t.Fatalf("LocalhostPlan Argv = %v, want %v", p.Argv, want)
+	}
+	if p.TabName != "local" || !p.UseZellij {
+		t.Fatalf("LocalhostPlan metadata wrong: %+v", p)
+	}
+}
+
 func TestRun_ZeroExitIsSuccess(t *testing.T) {
 	tool := writeTool(t, "okcmd", "#!/bin/sh\nexit 0\n")
 	err := Run(context.Background(), Plan{Argv: []string{tool}})
