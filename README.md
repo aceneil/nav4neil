@@ -8,6 +8,18 @@
 
 - 解析 `~/.ssh/config` 与 `~/.config/wezterm4neil/servers.txt`，在服务器区段
   显示别名、可选说明和连接目标。
+- 服务器区段可直接管理 `servers.txt`：`servers` 单区顶部为
+  `serv4neil` + `[NEW] [EDIT]`，`n`/`N` 新建、`e`/`E` 编辑当前行
+  （内置 `localhost` 与 `~/.ssh/config` 条目只读，会给出提示）。
+  表单支持 Tab/方向键切换字段、Enter 保存（Enable）、Esc 取消（Cancel），
+  也可鼠标点击操作行与表单按钮。
+- 保存的 `servers.txt` 新行格式为
+  `<name>|<user>@<host>:<port>|<desc>|<group>|<password>`（仍兼容旧
+  `<name>|<desc>`）；保存后自动刷新列表，内置 `localhost` 恒在最前且
+  不允许被新增条目占用。
+- 带密码的条目用 `sshpass -p <pw> ssh -p <port> <user>@<host>` 连接；
+  系统缺少 `sshpass` 时状态栏提示安装；无密码走原有 ssh 逻辑
+  （`zellij action new-tab` / 直连）。
 - 文件区段支持目录进入/返回、过滤、刷新、鼠标点击与 Nerd Font 文件图标。
 - 在 Zellij 内选择服务器时执行 `zellij action new-tab --name <tab> -- ssh <target>`，
   不替换当前 pane。
@@ -70,8 +82,9 @@ layout {
 }
 ```
 
-文件区段以 `~` 表示 `$HOME`，超长路径从左侧截断。`neilwz-servers` 与
-`neilwz-files` 是唯一的区段头行，不使用装饰性虚线或额外的旧名称标题。
+文件区段以 `~` 表示 `$HOME`，超长路径从左侧截断。`both` 布局中
+`neilwz-servers` 是服务器 pane 头行；`servers` 单区模式则以
+`serv4neil` 标题行 + `[NEW] [EDIT]` 操作行开头，不使用装饰性虚线。
 服务器选中行保留 `▶`/`▷` 指示；文件行在名称前显示 Nerd Font 图标。
 
 ## 快捷键
@@ -80,12 +93,17 @@ layout {
 | --- | --- |
 | `j` / `k` / `↑` / `↓` | 上下移动 |
 | `Enter` | 打开服务器、目录或文件 |
+| `n` / `N` | 服务器区段：新建服务器（悬浮表单） |
+| `e` / `E` | 服务器区段：编辑当前选中的 `servers.txt` 条目 |
 | `h` / `l` / `←` / `→` | 文件区段返回上级/进入目录 |
 | `1` / `2` / `Tab` | `both` 模式切换 pane |
 | `/` | 过滤当前区段；`Esc` 清除过滤 |
 | `r` | 刷新服务器、文件或当前区段 |
 | `?` | 显示快捷键提示 |
 | `q` / `Ctrl+C` | 退出 |
+
+服务器悬浮表单内：`Tab` / 方向键切换字段，`Enter` 保存（Enable），
+`Esc` 取消（Cancel）。
 
 ## WebSocket（ws）端点
 

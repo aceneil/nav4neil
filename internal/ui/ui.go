@@ -118,6 +118,15 @@ type Model struct {
 
 	editingFilter bool
 
+	// form is non-nil while the NEW/EDIT server overlay is open. All normal
+	// keys and mouse events route to the form until it is closed.
+	form *serverForm
+
+	// Path overrides (tests): when empty the real $HOME/.ssh/config and
+	// $XDG_CONFIG_HOME/wezterm4neil/servers.txt are used.
+	sshPathOverride   string
+	extraPathOverride string
+
 	status string // transient bottom-line message (right side)
 
 	ctx string // "local" or last-selected ssh alias
@@ -149,8 +158,7 @@ func NewModel(startDir string, wss *ws.Server, section Section) *Model {
 	switch section {
 	case SectionServers:
 		m.focus = paneServers
-		m.serversAll = servers.Load()
-		m.rebuildServerView()
+		m.reloadServers()
 	case SectionFiles:
 		m.focus = paneFiles
 		m.files = fs.New(startDir)
@@ -158,8 +166,7 @@ func NewModel(startDir string, wss *ws.Server, section Section) *Model {
 	default:
 		m.focus = paneServers
 		m.files = fs.New(startDir)
-		m.serversAll = servers.Load()
-		m.rebuildServerView()
+		m.reloadServers()
 		m.refreshFiles()
 	}
 	return m
@@ -198,6 +205,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// If we're in filter-edit mode, every printable key edits the buffer.
 	if m.editingFilter {
 		return m.handleFilterKey(msg)
+	}
+	// While the server form is open it owns every key until closed.
+	if m.form != nil {
+		return m.handleFormKey(msg)
 	}
 	k := msg.String()
 	switch k {
@@ -264,7 +275,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func helpText(s Section) string {
 	switch s {
 	case SectionServers:
-		return "j/k move · enter connect · / filter · r refresh servers · ? help · q quit"
+		return "j/k move · enter connect · n new · e edit · / filter · r refresh · ? help · q quit"
 	case SectionFiles:
 		return "j/k move · enter open · h/l parent/into · / filter · r refresh dir · ? help · q quit"
 	default:
@@ -288,10 +299,34 @@ func (m *Model) handleServersKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.serversView) > 0 {
 			m.serverCursor = len(m.serversView) - 1
 		}
+	case "n", "N":
+		m.openServerForm(servers.Entry{Source: "extra"}, false)
+	case "e", "E":
+		m.editSelectedServer()
 	case "enter":
 		m.openSelectedServer()
 	}
 	return m, nil
+}
+
+// editSelectedServer opens the EDIT overlay for the current row. Only
+// servers.txt-managed rows (Source "extra") are editable: ssh-config hosts
+// and the built-in localhost get an explanatory hint instead.
+func (m *Model) editSelectedServer() {
+	if len(m.serversView) == 0 {
+		m.status = "nothing to edit"
+		return
+	}
+	sel := m.serversView[m.serverCursor]
+	switch sel.Source {
+	case "builtin":
+		m.status = "localhost is built-in and fixed; use [NEW] to add another server"
+		return
+	case "ssh":
+		m.status = "ssh config hosts are not in servers.txt; use [NEW] to add a copy"
+		return
+	}
+	m.openServerForm(sel, true)
 }
 
 func (m *Model) handleFilesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -411,6 +446,10 @@ func (m *Model) rebuildFileView() {
 
 func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	_, y := msg.X, msg.Y
+	// While the server form is open mouse events only target the overlay.
+	if m.form != nil {
+		return m.handleFormMouse(msg)
+	}
 	switch msg.Type {
 	case tea.MouseLeft:
 		// Detect double-click via timestamp+position heuristic.
@@ -422,9 +461,19 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.lastClickY = msg.Y
 		switch m.section {
 		case SectionServers:
-			// Rows start at the top; the final row is the status bar.
-			if y >= 0 && y < m.height-1 {
-				m.serverCursor = clamp(y, 0, max(0, len(m.serversView)-1))
+			// Row 0 is the product title; row 1 is [NEW] [EDIT]; rows >= 2
+			// are the server list; the final row is the status bar.
+			if y == 1 {
+				switch opsRowHit(msg.X) {
+				case "new":
+					m.openServerForm(servers.Entry{Source: "extra"}, false)
+				case "edit":
+					m.editSelectedServer()
+				}
+				return m, nil
+			}
+			if y >= 2 && y < m.height-1 {
+				m.serverCursor = clamp(y-2, 0, max(0, len(m.serversView)-1))
 				if double {
 					m.openSelectedServer()
 				}
@@ -491,6 +540,12 @@ func (m *Model) openSelectedServer() {
 	}
 	sel := m.serversView[m.serverCursor]
 	plan := action.Build(sel)
+	if plan.NeedSshpass {
+		// A password is stored for this server but sshpass is not on PATH:
+		// do not launch anything — tell the user how to fix it.
+		m.status = "password set but sshpass missing — sudo apt install sshpass (or use keys)"
+		return
+	}
 	m.ctx = servers.TabName(sel)
 	if m.wss != nil {
 		m.wss.SetContext(m.ctx)
@@ -543,7 +598,14 @@ func (m *Model) enterSelectedFile() {
 }
 
 func (m *Model) reloadServers() {
-	m.serversAll = servers.Load()
+	sshPath, extraPath := servers.SSHConfigPath(), servers.ExtraListPath()
+	if m.sshPathOverride != "" {
+		sshPath = m.sshPathOverride
+	}
+	if m.extraPathOverride != "" {
+		extraPath = m.extraPathOverride
+	}
+	m.serversAll = servers.LoadFrom(sshPath, extraPath)
 	m.rebuildServerView()
 }
 
@@ -579,8 +641,13 @@ func (m *Model) View() string {
 	// This keeps stacked Zellij panes compact and avoids decorative borders.
 	switch m.section {
 	case SectionServers:
-		// Single servers mode intentionally has no servers title row.
-		rows := m.height - 1
+		// Single servers mode: product title row, [NEW] [EDIT] ops row,
+		// then the server list fills the remaining height above the status.
+		b.WriteString(truncRunes(serversTitle(), m.width))
+		b.WriteByte('\n')
+		b.WriteString(truncRunes(serversOpsBar(), m.width))
+		b.WriteByte('\n')
+		rows := m.height - 3
 		if rows < 1 {
 			rows = 1
 		}
@@ -632,7 +699,11 @@ func (m *Model) View() string {
 	// Status bar.
 	b.WriteByte('\n')
 	b.WriteString(m.statusLine())
-	return b.String()
+	view := b.String()
+	if m.form != nil {
+		view = m.withFormOverlay(view)
+	}
+	return view
 }
 
 // sectionHeader returns the compact, stable label for a pane. The files
@@ -744,6 +815,25 @@ func (m *Model) wssURL() string {
 }
 
 // ----- helpers -------------------------------------------------------------
+
+// serversTitle is the single-section servers product title (row 0).
+func serversTitle() string { return "serv4neil" }
+
+// serversOpsBar renders the [NEW] [EDIT] action row (row 1). The two hit
+// zones used by opsRowHit must match these offsets.
+func serversOpsBar() string { return " [NEW]  [EDIT]" }
+
+// opsRowHit maps an x coordinate on the servers ops row to a button:
+// "new", "edit" or "" (outside both zones).
+func opsRowHit(x int) string {
+	switch {
+	case x >= 1 && x < 6:
+		return "new"
+	case x >= 8 && x < 14:
+		return "edit"
+	}
+	return ""
+}
 
 func pad(s string, w int, fill byte) string {
 	if len(s) >= w {

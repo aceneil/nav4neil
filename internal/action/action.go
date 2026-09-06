@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,11 +29,12 @@ import (
 
 // Plan describes one concrete execution the TUI should perform.
 type Plan struct {
-	UseZellij bool     // true → issue "zellij action new-tab ..."
-	Argv      []string // exec argv
-	TabName   string   // informational only (echoed in status bar)
-	SshTarget string   // informational only
-	Detected  string   // "zellij"|"no-zellij"|"no-zellij-or-zellij-bin"
+	UseZellij   bool     // true → issue "zellij action new-tab ..."
+	NeedSshpass bool     // entry has a password but sshpass is missing → hint, don't run
+	Argv        []string // exec argv
+	TabName     string   // informational only (echoed in status bar)
+	SshTarget   string   // informational only
+	Detected    string   // "zellij"|"no-zellij"|"no-zellij-or-zellij-bin"
 }
 
 // InZellij reports whether the current process is running inside a
@@ -43,6 +45,39 @@ func InZellij() bool { return os.Getenv("ZELLIJ") != "" }
 func HaveZellijBin() bool {
 	_, err := exec.LookPath("zellij")
 	return err == nil
+}
+
+// sshCommand builds the actual ssh argv tail for e:
+//
+//	sshpass -p <pw> ssh [-p <port>] <target>   (password + sshpass installed)
+//	ssh [-p <port>] <target>                   (no password)
+//
+// The second return reports whether a password exists but sshpass is missing;
+// callers must not execute in that case and should surface an install hint.
+func sshCommand(e servers.Entry) (argv []string, needSshpass bool) {
+	target := servers.SSHArg(e)
+	if e.Password != "" {
+		if _, err := exec.LookPath("sshpass"); err != nil {
+			return []string{"ssh", target}, true
+		}
+		argv = append(argv, "sshpass", "-p", e.Password)
+	}
+	argv = append(argv, "ssh")
+	if e.Port > 0 && e.Port != 22 {
+		argv = append(argv, "-p", strconv.Itoa(e.Port))
+	}
+	return append(argv, target), false
+}
+
+// environmentTag reports how this process will reach the new session.
+func environmentTag() string {
+	if InZellij() {
+		return "zellij"
+	}
+	if HaveZellijBin() {
+		return "no-zellij"
+	}
+	return "no-zellij-or-zellij-bin"
 }
 
 // Build computes the Plan for connecting to e. It does not touch the
@@ -66,6 +101,21 @@ func Build(e servers.Entry) Plan {
 		tab = "ssh"
 	}
 
+	sshTail, needSshpass := sshCommand(e)
+	if needSshpass {
+		// A password is stored but sshpass is not installed: surface an
+		// explicit hint instead of launching a broken ssh (or worse,
+		// leaking the password through a prompt-less exec).
+		return Plan{
+			UseZellij:   false,
+			NeedSshpass: true,
+			TabName:     tab,
+			SshTarget:   target,
+			Detected:    environmentTag(),
+			Argv:        sshTail,
+		}
+	}
+
 	if !InZellij() {
 		// Outside Zellij: still try `zellij action new-tab` so a future
 		// "attach" session can absorb the new tab; if no zellij binary
@@ -80,18 +130,18 @@ func Build(e servers.Entry) Plan {
 				Detected:  "no-zellij-or-zellij-bin",
 				// Provide a useful argv anyway so headless / dry-run
 				// callers can see what would have run.
-				Argv: []string{"ssh", target},
+				Argv: sshTail,
 			}
 		}
 		return Plan{
 			UseZellij: true,
 			TabName:   tab,
 			SshTarget: target,
-			Argv: []string{
+			Argv: append([]string{
 				"zellij", "action", "new-tab",
 				"--name", tab,
-				"--", "ssh", target,
-			},
+				"--",
+			}, sshTail...),
 			Detected: "no-zellij",
 		}
 	}
@@ -100,11 +150,11 @@ func Build(e servers.Entry) Plan {
 		UseZellij: true,
 		TabName:   tab,
 		SshTarget: target,
-		Argv: []string{
+		Argv: append([]string{
 			"zellij", "action", "new-tab",
 			"--name", tab,
-			"--", "ssh", target,
-		},
+			"--",
+		}, sshTail...),
 		Detected: "zellij",
 	}
 }

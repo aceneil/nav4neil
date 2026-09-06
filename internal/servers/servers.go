@@ -6,17 +6,30 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
 // Entry describes one line in the merged server list.
 // Source is "builtin", "ssh" (parsed from ~/.ssh/config), or "extra" (parsed from
 // ~/.config/wezterm4neil/servers.txt).
+//
+// Extra entries that carry an explicit login target set User/Host/Port (and
+// optionally Password/Group); legacy extra lines keep only Alias/Desc and
+// SshAlias == Alias, exactly as they were stored. Structured fields are the
+// M2 servers.txt form:
+//
+//	<name>|<user>@<host>:<port>|<desc>|<group>|<password>
 type Entry struct {
-	Alias    string // ssh Host name OR extra alias (left of "|")
+	Alias    string // ssh Host name OR extra name (display alias)
 	Desc     string // free-form description; empty for ssh entries
-	Source   string // "ssh" or "extra"
-	SshAlias string // value to pass to ssh (alias or user@host)
+	Group    string // extra rows only: server group label
+	User     string // extra rows only: ssh login user (may be empty)
+	Host     string // extra rows only: ssh host (empty for legacy rows)
+	Port     int    // extra rows only: ssh port (default 22 when set)
+	Password string // extra rows only: ssh password (empty = key/agent auth)
+	Source   string // "builtin", "ssh" or "extra"
+	SshAlias string // value to pass to ssh (alias or user@host) for legacy rows
 }
 
 // SSHConfigPath returns the user's OpenSSH client config path,
@@ -87,13 +100,20 @@ func ParseSSHConfig(r io.Reader) ([]string, error) {
 	return hosts, nil
 }
 
-// ParseExtraList reads servers.txt. Each line is either:
+// ParseExtraList reads servers.txt. Each line is either a legacy row
 //
 //	"alias"
 //	"alias|description"
-//	"user@host|description"  (alias = ssh target)
+//	"user@host|description"       (alias = ssh target)
 //
-// Lines starting with '#' or blank are skipped.
+// or an M2 structured row
+//
+//	"name|user@host:port|desc|group|password"
+//
+// Structured rows are recognised by their second field looking like an ssh
+// target (contains '@', or carries a :port suffix). Legacy rows — including
+// descriptions that themselves contain '|' or other free text — keep the old
+// alias/description semantics. Lines starting with '#' or blank are skipped.
 func ParseExtraList(r io.Reader) ([]Entry, error) {
 	var out []Entry
 	sc := bufio.NewScanner(r)
@@ -102,19 +122,49 @@ func ParseExtraList(r io.Reader) ([]Entry, error) {
 		if raw == "" || strings.HasPrefix(raw, "#") {
 			continue
 		}
-		alias, desc := raw, ""
-		if i := strings.Index(raw, "|"); i >= 0 {
-			alias = strings.TrimSpace(raw[:i])
-			desc = strings.TrimSpace(raw[i+1:])
-		}
-		if alias == "" {
+		parts := strings.Split(raw, "|")
+		first := strings.TrimSpace(parts[0])
+		if first == "" {
 			continue
 		}
+		// Bare alias (legacy).
+		if len(parts) == 1 {
+			out = append(out, Entry{Alias: first, Source: "extra", SshAlias: first})
+			continue
+		}
+		// Structured row: second field is an explicit target.
+		if len(parts) >= 2 && looksLikeTarget(parts[1]) {
+			user, host, port := parseTarget(parts[1])
+			e := Entry{
+				Alias:  first,
+				Source: "extra",
+				User:   user,
+				Host:   host,
+				Port:   port,
+			}
+			if len(parts) >= 3 {
+				e.Desc = strings.TrimSpace(parts[2])
+			}
+			if len(parts) >= 4 {
+				e.Group = strings.TrimSpace(parts[3])
+			}
+			if len(parts) >= 5 {
+				e.Password = parts[4]
+			}
+			out = append(out, e)
+			continue
+		}
+		// Legacy alias|description. Preserve the raw remainder after the first
+		// pipe (descriptions may contain further pipes and odd spacing).
+		desc := ""
+		if i := strings.Index(raw, "|"); i >= 0 {
+			desc = strings.TrimSpace(raw[i+1:])
+		}
 		out = append(out, Entry{
-			Alias:    alias,
+			Alias:    first,
 			Desc:     desc,
 			Source:   "extra",
-			SshAlias: alias,
+			SshAlias: first,
 		})
 	}
 	if err := sc.Err(); err != nil {
@@ -123,14 +173,112 @@ func ParseExtraList(r io.Reader) ([]Entry, error) {
 	return out, nil
 }
 
+// looksLikeTarget reports whether a servers.txt field is an explicit ssh
+// target ("user@host", "host:port", "user@host:port") rather than free text.
+// Free-text descriptions almost never contain '@' and only look like hosts
+// when they carry a numeric :port suffix, so this keeps legacy rows safe.
+func looksLikeTarget(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" || strings.ContainsAny(s, " 	") {
+		return false
+	}
+	if i := strings.LastIndexByte(s, ':'); i >= 0 {
+		if p, err := strconv.Atoi(s[i+1:]); err == nil && p > 0 && p < 65536 {
+			return true
+		}
+	}
+	return strings.ContainsRune(s, '@')
+}
+
+// parseTarget splits "user@host:port" into its parts. Port defaults to 22
+// when absent; user may be empty ("host:2222" is legal).
+func parseTarget(t string) (user, host string, port int) {
+	port = 22
+	t = strings.TrimSpace(t)
+	if i := strings.LastIndexByte(t, '@'); i >= 0 {
+		user = strings.TrimSpace(t[:i])
+		t = t[i+1:]
+	}
+	if i := strings.LastIndexByte(t, ':'); i >= 0 {
+		if p, err := strconv.Atoi(t[i+1:]); err == nil && p > 0 && p <= 65535 {
+			port = p
+			t = t[:i]
+		}
+	}
+	return user, t, port
+}
+
+// ParseTarget is the exported form of parseTarget, used by the UI to prefill
+// the EDIT overlay for legacy rows whose alias itself is an ssh target.
+func ParseTarget(t string) (user, host string, port int) {
+	return parseTarget(t)
+}
+
+// Line serialises one servers.txt row. Structured entries (explicit Host)
+// always use the 5-field form so the file is unambiguous; legacy entries are
+// re-emitted in their original short form, keeping round-trips lossless.
+func (e Entry) Line() string {
+	if e.Host == "" {
+		if e.Desc == "" {
+			return e.Alias
+		}
+		return e.Alias + "|" + e.Desc
+	}
+	port := e.Port
+	if port <= 0 || port > 65535 {
+		port = 22
+	}
+	target := e.Host
+	if e.User != "" {
+		target = e.User + "@" + target
+	}
+	target += ":" + strconv.Itoa(port)
+	return strings.Join([]string{e.Alias, target, e.Desc, e.Group, e.Password}, "|")
+}
+
+// SaveExtrasTo atomically writes the user-managed servers.txt file at path
+// ("" selects the default location). Only the entries passed in are written —
+// callers pass the "extra" subset. The file's parent directory is created.
+func SaveExtrasTo(path string, entries []Entry) error {
+	if path == "" {
+		path = ExtraListPath()
+	}
+	var b strings.Builder
+	for _, e := range entries {
+		b.WriteString(e.Line())
+		b.WriteByte('\n')
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// SaveExtras writes entries to the default servers.txt location.
+func SaveExtras(entries []Entry) error {
+	return SaveExtrasTo("", entries)
+}
+
 // Load returns the merged server list (ssh + extra), in order, with
-// duplicates removed (ssh entries win, first appearance kept).
+// duplicates removed (ssh entries win, first appearance kept) and the
+// built-in localhost kept at the front.
 func Load() []Entry {
+	return LoadFrom(SSHConfigPath(), ExtraListPath())
+}
+
+// LoadFrom is Load with explicit data-source paths ("" skips a source).
+// It exists so callers — and tests — can pin down exactly which files are
+// read instead of relying on the ambient $HOME / XDG_CONFIG_HOME.
+func LoadFrom(sshPath, extraPath string) []Entry {
 	var out []Entry
 	seen := map[string]bool{}
 
-	if p := SSHConfigPath(); p != "" {
-		if f, err := os.Open(p); err == nil {
+	if sshPath != "" {
+		if f, err := os.Open(sshPath); err == nil {
 			hosts, _ := ParseSSHConfig(f)
 			_ = f.Close()
 			for _, h := range hosts {
@@ -150,11 +298,16 @@ func Load() []Entry {
 
 	out = InjectBuiltin(out)
 
-	if p := ExtraListPath(); p != "" {
-		if f, err := os.Open(p); err == nil {
+	if extraPath != "" {
+		if f, err := os.Open(extraPath); err == nil {
 			extras, _ := ParseExtraList(f)
 			_ = f.Close()
 			for _, e := range extras {
+				// "localhost" is reserved for the built-in entry: a user row
+				// may never shadow or duplicate it, regardless of case.
+				if strings.EqualFold(e.Alias, "localhost") {
+					continue
+				}
 				if seen[e.Alias] {
 					continue
 				}
@@ -180,8 +333,18 @@ func TabName(e Entry) string {
 	return a
 }
 
-// SSHArg returns the value to pass to "ssh" (alias or user@host form).
+// SSHArg returns the value to pass to "ssh" as the destination: for
+// structured extra entries this is "user@host" (or "host"); for everything
+// else the legacy alias or SshAlias form is used unchanged. Port is handled
+// separately by the action layer via -p.
 func SSHArg(e Entry) string {
+	if e.Host != "" {
+		t := e.Host
+		if e.User != "" {
+			t = e.User + "@" + t
+		}
+		return t
+	}
 	if e.SshAlias != "" {
 		return e.SshAlias
 	}
