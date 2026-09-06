@@ -37,6 +37,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -181,6 +182,12 @@ type Model struct {
 	opsSel    srvOp
 	collapsed map[string]bool // group name → folded (children hidden)
 
+	// M6 edit mode: while editMode is true the servers pane re-interprets
+	// Enter/→ (edit the row under the cursor instead of opening it), the ops
+	// row renders as <NEW> <EDIT>, and the focused pointer turns green. It is
+	// entered with e/E or the [EDIT] click and left with Esc (or e/E again).
+	editMode bool
+
 	// M3 connection-status squares: in-Zellij we poll dump-layout for open
 	// tab names; the ok/failed ledger below also drives the fallback mode
 	// (outside Zellij or when a poll fails).
@@ -197,9 +204,12 @@ type Model struct {
 
 	editingFilter bool
 
-	// form is non-nil while the NEW/EDIT server overlay is open. All normal
-	// keys and mouse events route to the form until it is closed.
-	form *serverForm
+	// form is non-nil while the NEW/EDIT server overlay is open, gform while
+	// the RENAME GROUP overlay is open. At most one overlay exists at a time;
+	// while it is open all normal keys and mouse events route to it until it
+	// is closed.
+	form  *serverForm
+	gform *groupForm
 
 	// Path overrides (tests): when empty the real $HOME/.ssh/config and
 	// $XDG_CONFIG_HOME/wezterm4neil/servers.txt are used.
@@ -364,9 +374,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.editingFilter {
 		return m.handleFilterKey(msg)
 	}
-	// While the server form is open it owns every key until closed.
+	// While an overlay is open it owns every key until closed.
 	if m.form != nil {
 		return m.handleFormKey(msg)
+	}
+	if m.gform != nil {
+		return m.handleGroupFormKey(msg)
 	}
 	k := msg.String()
 	switch k {
@@ -433,7 +446,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func helpText(s Section) string {
 	switch s {
 	case SectionServers:
-		return "j/k move · ←/→ or h/l arm [NEW]/[EDIT] · enter open or fold group · n new · e edit · / filter · r refresh · ? help · q quit"
+		return "j/k move · ←/→ or h/l arm [NEW]/[EDIT] · enter open or fold group · n new · e edit-mode · / filter · r refresh · ? help · q quit"
 	case SectionFiles:
 		return "j/k move · enter open · h/l parent/into · / filter · r refresh dir · ? help · q quit"
 	default:
@@ -443,6 +456,12 @@ func helpText(s Section) string {
 
 func (m *Model) handleServersKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "esc":
+		// Leave edit mode; outside edit mode Esc has no servers-pane action.
+		if m.editMode {
+			m.editMode = false
+			m.status = ""
+		}
 	case "j", "down":
 		m.moveSrvCursor(1)
 	case "k", "up":
@@ -461,18 +480,109 @@ func (m *Model) handleServersKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.opsSel = opNew
 		}
 	case "l", "right":
-		// On the ops row, →/l arm [EDIT].
-		if m.onOpsRow() {
+		// In edit mode →/l edits whatever is under the cursor (server form or
+		// group rename); on the ops row it arms [EDIT]. Outside edit mode →
+		// only arms [EDIT] while the cursor rests on the ops row.
+		if m.editMode {
+			m.editCurrentRow()
+		} else if m.onOpsRow() {
 			m.opsSel = opEdit
 		}
 	case "n", "N":
 		m.openServerForm(servers.Entry{Source: "extra"}, false)
 	case "e", "E":
-		m.editSelectedServer()
+		m.toggleEditMode()
 	case "enter":
-		m.activateServerRow()
+		if m.editMode {
+			m.activateEditRow()
+		} else {
+			m.activateServerRow()
+		}
 	}
 	return m, nil
+}
+
+// toggleEditMode flips the servers-pane edit mode. Entering it moves the
+// cursor to the top-most real row (a server, or the first folder when the
+// list starts with one) and shows a hint; leaving it clears the mode without
+// touching the cursor.
+func (m *Model) toggleEditMode() {
+	if m.editMode {
+		m.editMode = false
+		m.status = ""
+		return
+	}
+	m.editMode = true
+	m.jumpSrvFirstItem()
+	m.status = "edit mode: Enter/→ 编辑当前项 · Esc 退出"
+}
+
+// jumpSrvFirstItem sends the display cursor to the top-most actionable row
+// (first server or, when the visible list starts with folders, the first
+// folder), skipping the ops row.
+func (m *Model) jumpSrvFirstItem() {
+	for i, r := range m.srvRows {
+		if r.kind == srvRowEntry || r.kind == srvRowGroup {
+			m.srvCursor = i
+			m.syncSelectionToRow()
+			return
+		}
+	}
+	m.srvCursor = 0
+}
+
+// activateEditRow runs the M6 edit-mode semantics of Enter: an entry row
+// opens its EDIT form, a folder row folds/unfolds (Enter never renames), and
+// the ops row triggers its armed op.
+func (m *Model) activateEditRow() {
+	if len(m.srvRows) == 0 {
+		return
+	}
+	r := m.srvRows[m.srvCursor]
+	switch r.kind {
+	case srvRowOps:
+		if m.opsSel == opEdit {
+			m.editSelectedServer()
+		} else {
+			m.openServerForm(servers.Entry{Source: "extra"}, false)
+		}
+	case srvRowGroup:
+		m.toggleGroup(r.group)
+	case srvRowEntry:
+		m.editEntry(r.entry)
+	}
+}
+
+// editCurrentRow implements the M6 edit-mode semantics of →/l: the row under
+// the cursor opens its editing overlay — server rows the EDIT server form,
+// folder rows the RENAME GROUP form; on the ops row → merely arms [EDIT].
+func (m *Model) editCurrentRow() {
+	if len(m.srvRows) == 0 {
+		return
+	}
+	r := m.srvRows[m.srvCursor]
+	switch r.kind {
+	case srvRowOps:
+		m.opsSel = opEdit
+	case srvRowGroup:
+		m.openGroupForm(r.group)
+	case srvRowEntry:
+		m.editEntry(r.entry)
+	}
+}
+
+// editEntry opens the EDIT overlay for one real entry, guarding the
+// read-only rows (builtin localhost and ssh-config hosts get hints instead).
+func (m *Model) editEntry(e servers.Entry) {
+	switch e.Source {
+	case "builtin":
+		m.status = "localhost is built-in and fixed; use [NEW] to add another server"
+		return
+	case "ssh":
+		m.status = "ssh config hosts are not in servers.txt; use [NEW] to add a copy"
+		return
+	}
+	m.openServerForm(e, true)
 }
 
 // onOpsRow reports whether the display cursor rests on the combined ops row.
@@ -570,9 +680,11 @@ func (m *Model) toggleGroup(g string) {
 	}
 }
 
-// editSelectedServer opens the EDIT overlay for the selected row. Only
-// servers.txt-managed rows (Source "extra") are editable: ssh-config hosts
-// and the built-in localhost get an explanatory hint instead.
+// editSelectedServer opens the EDIT overlay for the currently selected entry
+// (used by the ops row's armed [EDIT] action; entry/folder rows under the
+// cursor go through editEntry/editCurrentRow). Only servers.txt-managed rows
+// (Source "extra") are editable: ssh-config hosts and the built-in localhost
+// get an explanatory hint instead.
 func (m *Model) editSelectedServer() {
 	if len(m.serversView) == 0 {
 		m.status = "nothing to edit"
@@ -581,16 +693,7 @@ func (m *Model) editSelectedServer() {
 	if m.serverCursor < 0 || m.serverCursor >= len(m.serversView) {
 		m.serverCursor = clamp(m.serverCursor, 0, max(0, len(m.serversView)-1))
 	}
-	sel := m.serversView[m.serverCursor]
-	switch sel.Source {
-	case "builtin":
-		m.status = "localhost is built-in and fixed; use [NEW] to add another server"
-		return
-	case "ssh":
-		m.status = "ssh config hosts are not in servers.txt; use [NEW] to add a copy"
-		return
-	}
-	m.openServerForm(sel, true)
+	m.editEntry(m.serversView[m.serverCursor])
 }
 
 func (m *Model) handleFilesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -812,9 +915,12 @@ func (m *Model) rebuildFileView() {
 
 func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	_, y := msg.X, msg.Y
-	// While the server form is open mouse events only target the overlay.
+	// While an overlay is open mouse events only target the overlay.
 	if m.form != nil {
 		return m.handleFormMouse(msg)
+	}
+	if m.gform != nil {
+		return m.handleGroupFormMouse(msg)
 	}
 	switch msg.Type {
 	case tea.MouseLeft:
@@ -898,8 +1004,9 @@ func (m *Model) clickServerListRow(x, vis int, double bool) {
 		// The ▶ marker of the armed op sits inside each segment.
 		if x < 8 {
 			m.openServerForm(servers.Entry{Source: "extra"}, false)
-		} else {
-			m.editSelectedServer()
+		} else if !m.editMode {
+			// M6: clicking [EDIT] enters edit mode (already editing → no-op).
+			m.toggleEditMode()
 		}
 	case srvRowGroup:
 		m.syncSelectionToRow()
@@ -909,7 +1016,13 @@ func (m *Model) clickServerListRow(x, vis int, double bool) {
 	case srvRowEntry:
 		m.syncSelectionToRow()
 		if double {
-			m.openEntry(r.entry)
+			if m.editMode {
+				// While editing, double-clicking a server edits it instead of
+				// opening a connection (avoids accidental ssh launches).
+				m.editEntry(r.entry)
+			} else {
+				m.openEntry(r.entry)
+			}
 		}
 	}
 }
@@ -959,15 +1072,14 @@ func (m *Model) openSelectedServer() {
 	m.openEntry(m.serversView[m.serverCursor])
 }
 
-// openEntry connects to one real server row (M5). The built-in localhost
-// never types anything: inside Zellij it moves focus to the pane on the
-// right (the local shell), outside Zellij it only explains itself in the
-// status bar. Every other entry — ssh-config hosts and servers.txt entries
-// alike — is used inside the right main terminal pane of the current tab:
-// the TUI types Ctrl+C then the ssh command + Enter there (no new tab, no
-// fullscreen). When a concrete pane id can be resolved the writes target
-// that pane directly (-p); otherwise the plan first moves focus right and
-// writes into the focused pane.
+// openEntry connects to one real server row (M6). The built-in localhost
+// never opens an ssh session: inside Zellij it adds a fresh local-shell pane
+// to the right main area. Every other entry — ssh-config hosts and
+// servers.txt entries alike — opens its own brand-new pane in the right main
+// area of the current tab, running the ssh command directly (zellij action
+// new-pane -- ssh …). Nothing is typed into an existing pane anymore, and no
+// full-screen tab is created: repeating a click on the same server opens one
+// more pane each time.
 func (m *Model) openEntry(e servers.Entry) {
 	if e.Source == "builtin" {
 		m.openLocalhost()
@@ -982,20 +1094,14 @@ func (m *Model) openEntry(e servers.Entry) {
 	}
 	if len(plan.Steps) == 0 {
 		// Outside Zellij there is no pane layout to steer.
-		m.status = fmt.Sprintf("→ %s: not inside Zellij — start zellij to connect in the right pane", plan.TabName)
+		m.status = fmt.Sprintf("→ %s: not inside Zellij — start zellij to open it in the right pane", plan.TabName)
 		return
 	}
 	m.ctx = servers.TabName(e)
 	if m.wss != nil {
 		m.wss.SetContext(m.ctx)
 	}
-	// Inside Zellij: try to resolve a concrete pane id so the writes can
-	// target the right main pane without stealing focus from nav4neil.
-	pane := action.ResolveRightPaneID(context.Background())
-	if pane != "" {
-		plan = action.SshWritePlan(e, pane)
-	}
-	m.status = fmt.Sprintf("→ %s  (right pane %s)", plan.TabName, paneDisplay(pane))
+	m.status = fmt.Sprintf("→ %s  (new pane, right area)", plan.TabName)
 	if err := action.Run(context.Background(), plan); err != nil {
 		m.noteOpenResult(e.Alias, err)
 		m.status = "exec failed: " + err.Error()
@@ -1006,24 +1112,18 @@ func (m *Model) openEntry(e servers.Entry) {
 	m.noteOpenResult(e.Alias, nil)
 }
 
-// paneDisplay renders the target-pane detail for the status bar.
-func paneDisplay(pane string) string {
-	if pane != "" {
-		return "#" + pane
-	}
-	return "focused"
-}
-
-// openLocalhost implements the M4/M5 localhost behaviour: instead of opening
-// a full-screen new tab, focus the right-hand pane (which is the local
-// shell) with `zellij action move-focus right`. Outside Zellij there is no
-// pane layout to steer, so we surface a status-bar hint only.
+// openLocalhost implements the M6 localhost behaviour: instead of opening a
+// full-screen new tab or typing into an existing pane, focus the right-hand
+// main area and open a new pane there running the local shell (fish when
+// available — see action.LocalShell), so every click on localhost yields its
+// own fresh local session. Outside Zellij there is no pane layout to steer,
+// so we surface a status-bar hint only.
 func (m *Model) openLocalhost() {
 	if !action.InZellij() {
-		m.status = "localhost: not inside Zellij — focus the local shell pane manually"
+		m.status = "localhost: not inside Zellij — start zellij to open a local shell in the right pane"
 		return
 	}
-	plan := action.LocalhostPlan()
+	plan := action.LocalhostNewPanePlan(action.LocalShell())
 	m.ctx = "local"
 	if m.wss != nil {
 		m.wss.SetContext(m.ctx)
@@ -1034,7 +1134,7 @@ func (m *Model) openLocalhost() {
 		return
 	}
 	m.noteOpenResult("localhost", nil)
-	m.status = "→ local shell (move-focus right)"
+	m.status = "→ local shell (new pane, right area)"
 }
 
 func (m *Model) enterSelectedFile() {
@@ -1181,6 +1281,9 @@ func (m *Model) View() string {
 	if m.form != nil {
 		view = m.withFormOverlay(view)
 	}
+	if m.gform != nil {
+		view = m.withGroupOverlay(view)
+	}
 	return view
 }
 
@@ -1241,6 +1344,22 @@ func (m *Model) renderServerRow(i int) string {
 	return m.renderEntryRow(m.serversView[i], false, i == m.serverCursor)
 }
 
+// rowPointer renders the pointer cell of one focused servers-pane row: a
+// blank cell when the row is not focused, ▶/▷ otherwise. In M6 edit mode the
+// glyph is painted green (see pointerCell) so the active mode is obvious
+// even in a long list. The glyph always occupies exactly one terminal cell —
+// colour escapes live inside it, away from the padded row body.
+func (m *Model) rowPointer(focused bool) string {
+	if !focused {
+		return " "
+	}
+	g := "▶"
+	if m.focus != paneServers {
+		g = "▷"
+	}
+	return pointerCell(g, m.editMode)
+}
+
 // renderEntryRow renders one server entry in the M5 column order —
 // pointer (▶/▷ or a blank placeholder) + one space + status square + name —
 // so the coloured square hugs the left edge of the name instead of sitting
@@ -1249,14 +1368,7 @@ func (m *Model) renderServerRow(i int) string {
 // only in the glyph cell; the padded body is plain text, so column
 // alignment and truncation never see ANSI.
 func (m *Model) renderEntryRow(e servers.Entry, child, focused bool) string {
-	ptr := " "
-	if focused {
-		if m.focus == paneServers {
-			ptr = "▶"
-		} else {
-			ptr = "▷"
-		}
-	}
+	ptr := m.rowPointer(focused)
 	desc := ""
 	if e.Desc != "" {
 		desc = "  (" + e.Desc + ")"
@@ -1277,19 +1389,24 @@ func (m *Model) renderEntryRow(e servers.Entry, child, focused bool) string {
 // [NEW] and [EDIT] sit side by side on the same row (M5: no more wrapping
 // onto two list rows). While the ops row is focused, the armed op
 // (opsSel, toggled with ←/→ or h/l) carries the ▶/▷ pointer; Enter triggers
-// the armed op. Segments keep fixed widths so click hit zones never move.
+// the armed op. In M6 edit mode the labels render with angle brackets —
+// <NEW> <EDIT> — so the current mode is visible at a glance. Segments keep
+// fixed widths so click hit zones never move.
 func (m *Model) renderOpsRow(focused bool) string {
 	mark := func(armed bool) string {
 		if !focused || !armed {
 			return "  "
 		}
-		if m.focus == paneServers {
-			return "▶ "
-		}
-		return "▷ "
+		return m.rowPointer(true) + " "
 	}
-	line := mark(m.opsSel == opNew) + "[NEW]" + " " + mark(m.opsSel == opEdit) + "[EDIT]"
-	return truncRunes(padRunes(line, m.width), m.width)
+	open, close := "[", "]"
+	if m.editMode {
+		open, close = "<", ">"
+	}
+	line := mark(m.opsSel == opNew) + open + "NEW" + close + " " + mark(m.opsSel == opEdit) + open + "EDIT" + close
+	// The line may carry SGR colour inside the armed pointer, so pad/truncate
+	// on visible cells (escapes count as zero width) instead of raw runes.
+	return cellText(line, m.width)
 }
 
 // renderFolderRow renders a group folder: "▾ group/" while expanded,
@@ -1298,14 +1415,7 @@ func (m *Model) renderOpsRow(focused bool) string {
 // arrow occupies the same two cells a child entry reserves for its indent,
 // so the group label lines up exactly under the child names.
 func (m *Model) renderFolderRow(group string, focused bool) string {
-	ptr := " "
-	if focused {
-		if m.focus == paneServers {
-			ptr = "▶"
-		} else {
-			ptr = "▷"
-		}
-	}
+	ptr := m.rowPointer(focused)
 	arrow := "▾ "
 	if m.collapsed[group] {
 		arrow = "▸ "
@@ -1395,6 +1505,53 @@ func padRunes(s string, w int) string {
 		return s
 	}
 	return s + strings.Repeat(" ", w-n)
+}
+
+// skipSGR returns the index just past the SGR sequence starting at s[i]
+// (s[i] == '\x1b', "...m"). If no terminating 'm' exists it consumes the
+// rest of the string.
+func skipSGR(s string, i int) int {
+	j := i + 1
+	for j < len(s) && s[j] != 'm' {
+		j++
+	}
+	if j < len(s) {
+		j++ // past the 'm'
+	}
+	return j
+}
+
+// cellText pads/truncates s to w visible terminal cells, treating SGR colour
+// escapes (\x1b[…m) as zero width so coloured rows keep their exact layout.
+// Escapes are consumed whole (they never count toward the cell budget), so
+// truncation can never split one open — no stray colour can bleed into the
+// padded remainder.
+func cellText(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	var b strings.Builder
+	cells := 0
+	for i := 0; i < len(s) && cells < w; {
+		if s[i] == '\x1b' {
+			j := skipSGR(s, i)
+			b.WriteString(s[i:j])
+			i = j
+			continue
+		}
+		_, sz := utf8.DecodeRuneInString(s[i:])
+		if sz <= 0 {
+			sz = 1
+		}
+		b.WriteString(s[i : i+sz])
+		cells++
+		i += sz
+	}
+	for cells < w {
+		b.WriteByte(' ')
+		cells++
+	}
+	return b.String()
 }
 
 func blank(w int) string {

@@ -177,16 +177,29 @@ func TestModel_NewServerSaveRefresh(t *testing.T) {
 	}
 }
 
-// TestModel_EditPrefillRenameAndPersist checks EDIT prefill plus the
-// rename = save-with-new-name + drop-old-row behaviour.
+// TestModel_EditPrefillRenameAndPersist checks the M6 EDIT flow (e enters
+// edit mode, cursor lands on the first server, Enter on a server row opens
+// the EDIT overlay) plus the rename = save-with-new-name + drop-old-row
+// behaviour.
 func TestModel_EditPrefillRenameAndPersist(t *testing.T) {
 	seed := "db1|root@10.0.0.5:2222|prod db|dc|s3cr3t\n"
 	m, extraFile := newServersModel(t, seed)
-	// Cursor onto db1 (index 1; row 0 is builtin localhost).
-	m.serverCursor = 1
+	// Rows: ops, localhost, db1. Press e → edit mode, cursor jumps to the
+	// first server (localhost, row 1); j moves onto db1; Enter opens EDIT.
 	m.Update(teaKeyMsg("e"))
+	if !m.editMode {
+		t.Fatalf("e must enter edit mode, status=%q", m.status)
+	}
+	if m.srvCursor != 1 || m.srvRows[m.srvCursor].entry.Alias != "localhost" {
+		t.Fatalf("entering edit mode must land the cursor on the first server: row=%d %+v", m.srvCursor, m.srvRows[m.srvCursor])
+	}
+	// Rows: ops, localhost, ▾dc folder, db1 (grouped) → two j presses reach
+	// the db1 child; Enter opens its EDIT form.
+	m.Update(teaKeyMsg("j"))
+	m.Update(teaKeyMsg("j"))
+	m.Update(teaKeyMsg("enter"))
 	if m.form == nil {
-		t.Fatalf("e must open the EDIT form, status=%q", m.status)
+		t.Fatalf("Enter in edit mode on db1 must open the EDIT form, status=%q", m.status)
 	}
 	if m.form.mode != formEdit || m.form.oldName != "db1" {
 		t.Fatalf("edit metadata wrong: %+v", m.form)
@@ -222,23 +235,31 @@ func TestModel_EditPrefillRenameAndPersist(t *testing.T) {
 	}
 }
 
-// TestModel_EditRejectsBuiltinAndSSH verifies the guards on what can be edited.
+// TestModel_EditRejectsBuiltinAndSSH verifies the guards on what can be
+// edited: Enter in edit mode on the built-in localhost row (or on an
+// ssh-config host) shows a hint and never opens a form.
 func TestModel_EditRejectsBuiltinAndSSH(t *testing.T) {
 	m, _ := newServersModel(t, "extra1|root@h:22|||\n")
-	// Row 0 = builtin localhost.
-	m.serverCursor = 0
+	// Row 0 = ops, row 1 = builtin localhost. Enter edit mode (cursor jumps
+	// to localhost) and press Enter on it.
 	m.Update(teaKeyMsg("e"))
+	m.Update(teaKeyMsg("enter"))
 	if m.form != nil || !strings.Contains(m.status, "built-in") {
 		t.Fatalf("builtin edit must be rejected: form=%v status=%q", m.form, m.status)
 	}
 	// An ssh-config host must also be rejected.
+	m.Update(teaKeyMsg("esc")) // leave edit mode
 	m.serversAll = []servers.Entry{
 		{Alias: "localhost", Source: "builtin"},
 		{Alias: "github.com", Source: "ssh", SshAlias: "github.com"},
 	}
 	m.rebuildServerView()
-	m.serverCursor = 1
-	m.Update(teaKeyMsg("E"))
+	m.Update(teaKeyMsg("e"))
+	if !m.editMode {
+		t.Fatalf("e must re-enter edit mode")
+	}
+	m.Update(teaKeyMsg("j")) // localhost → github.com
+	m.Update(teaKeyMsg("enter"))
 	if m.form != nil || !strings.Contains(m.status, "ssh config") {
 		t.Fatalf("ssh edit must be rejected: form=%v status=%q", m.form, m.status)
 	}
@@ -258,7 +279,7 @@ func TestModel_FormValidationLocalhostAndDuplicates(t *testing.T) {
 	// Duplicate of an existing extra row.
 	m.form = nil
 	m.serverCursor = 1 // box
-	m.Update(teaKeyMsg("e"))
+	m.openServerForm(m.serversView[m.serverCursor], true)
 	m.form.values[fieldName] = "dupe"
 	m.form.values[fieldHost] = "10.0.0.9"
 	m.enableForm()
@@ -283,11 +304,11 @@ func TestModel_FormValidationLocalhostAndDuplicates(t *testing.T) {
 }
 
 // TestModel_MouseOpsRowAndListOffset covers the click zones below the title:
-// the ops line (y=1) is split into a [NEW] half (left) and an [EDIT] half
-// (right); server entries start at y=2.
+// the ops line (y=1) is split into a [NEW] half (left, opens the NEW form)
+// and an [EDIT] half (right, M6: enters edit mode); server entries start at
+// y=2.
 func TestModel_MouseOpsRowAndListOffset(t *testing.T) {
 	m, _ := newServersModel(t, "db1|root@10.0.0.5:22|||\n")
-	m.serverCursor = 1 // keep db1 selected for the EDIT click
 	m.lastClickAt = timeZero()
 
 	// Click the [NEW] half of the ops line.
@@ -298,16 +319,16 @@ func TestModel_MouseOpsRowAndListOffset(t *testing.T) {
 	m.Update(teaKeyMsg("esc"))
 	m.lastClickAt = timeZero()
 
-	// Click the [EDIT] half of the ops line while db1 is selected.
+	// Click the [EDIT] half of the ops line: M6 enters edit mode (the cursor
+	// jumps to the first server instead of opening a form directly).
 	m.Update(tea.MouseMsg{Type: tea.MouseLeft, X: 10, Y: 1})
-	if m.form == nil || m.form.mode != formEdit || m.form.oldName != "db1" {
-		t.Fatalf("click on the [EDIT] half must open the edit form: %+v", m.form)
+	if m.form != nil || !m.editMode {
+		t.Fatalf("click on the [EDIT] half must enter edit mode: form=%v edit=%v", m.form != nil, m.editMode)
 	}
 	m.Update(teaKeyMsg("esc"))
 	m.lastClickAt = timeZero()
 
 	// Clicking a server row: y=2 is list row 0 (localhost).
-	m.serverCursor = 1
 	m.Update(tea.MouseMsg{Type: tea.MouseLeft, X: 3, Y: 2})
 	if m.srvCursor != 1 || m.serversView[m.serverCursor].Alias != "localhost" {
 		t.Fatalf("y=2 must select list row 0: srv=%d sel=%d", m.srvCursor, m.serverCursor)

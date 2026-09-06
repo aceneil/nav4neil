@@ -11,8 +11,10 @@
 - 服务器区段可直接管理 `servers.txt`：`servers` 单区顶部为 `serv4neil` 标题行，
   其下是一行合并的 `[NEW] [EDIT]` 操作项（左右并列，不再换行分列）。
   ↑/↓、j/k 循环到达该行，`←`/`→` 或 `h`/`l` 选择（armed）其中一项，Enter 或
-  鼠标单击对应半个区域触发；`n`/`N` 新建、`e`/`E` 编辑当前选中的
-  `servers.txt` 条目（内置 `localhost` 与 `~/.ssh/config` 条目只读，会给出提示）。
+  鼠标单击对应半个区域触发；`n`/`N` 新建。`e`/`E` 进入/退出 **编辑模式**
+  （M6）：进入后操作行显示为 `<NEW> <EDIT>`、光标变绿并跳到列表最上面的
+  服务器，编辑模式下 Enter 或 `→` 打开当前服务器/文件夹的编辑表单
+  （内置 `localhost` 与 `~/.ssh/config` 条目只读，会给出提示）。
   表单支持 Tab/方向键切换字段、Enter 保存（Enable）、Esc 取消（Cancel）。
 - 保存的 `servers.txt` 新行格式为
   `<name>|<user>@<host>:<port>|<desc>|<group>|<password>`（仍兼容旧
@@ -27,16 +29,17 @@
   指针前面），颜色含义见下文「服务器状态方块」；分组文件夹行不画小方块
   （保留一个空格列保持对齐），组名与子行名称对齐。
 - 文件区段支持目录进入/返回、过滤、刷新、鼠标点击与 Nerd Font 文件图标。
-- 所有服务器（含 ssh 服务器）都在 **当前 Zellij tab 的右侧主终端窗格** 内使用，
-  不再开新 tab 全屏：选中时先解析右侧主终端窗格的 pane id，然后向该窗格写入
-  `Ctrl+C`（清空当前行）和 `ssh …` 命令（带 `\r` 回车）。解析到 pane id 时用
-  `zellij action write -p <paneId>` 直写（nav4neil 不丢焦点）；解析不到时退回
-  `zellij action move-focus right` 后写入焦点窗格。不在 Zellij 内仅状态栏提示。
-  重复选择同一个/另一个服务器会向当前窗格（可能已是某台远程主机）再次输入，
-  这是 v1 的可接受行为。
-- 内置 `localhost` 不输入任何命令：在 Zellij 内点击/Enter 它时执行
-  `zellij action move-focus right`，把焦点交给右侧本机 shell pane；
-  不在 Zellij 内时仅状态栏提示，无副作用。
+- 所有服务器（含 ssh 服务器）都以 **当前 Zellij tab 右侧主区域里的新建窗格**
+  使用，不再开新 tab 全屏、也不再向已有窗格打字（M6 替换 M5 的 write 注入）：
+  先 `zellij action move-focus right` 把焦点带到右主区，再
+  `zellij action new-pane -- ssh …` 让新窗格直接运行该 ssh（命令复用既有
+  ssh/sshpass 逻辑，作为 argv 传入、不经 shell）。每点一次（Enter/双击/
+  同服务器重复点）都会在右主区多开一个窗格。
+- 内置 `localhost` 使用同一套 new-pane 语义：在右主区新开一个窗格运行
+  本地默认 shell（fish 优先，其次 `$SHELL`；都没有就让 Zellij 用其默认
+  shell），每次点击 = 一个新的本机会话。
+- 不在 Zellij 内时，打开任何服务器 / localhost 都只在状态栏提示，
+  不执行任何命令。
 - 默认启动一个仅绑定 `127.0.0.1` 的 HTTP/WebSocket 上下文服务；服务不可用时
   TUI 仍会继续运行。
 - 默认布局为上下两个 pane；`-section` 可只运行一个区段，便于嵌入布局。
@@ -115,10 +118,10 @@ layout {
 | ▮ 黄 | 无对应 tab / 尚未打开（默认） |
 | ▮ 红 | 最近一次打开该服务器失败或异常；下一次成功打开、或对应 tab 重新出现后自动清除 |
 
-M5 起打开服务器不再创建新 tab（ssh 直接写入右侧主窗格），所以常规操作下
-ssh 行不会凭空变绿：绿表示布局里仍存在与该服务器同名的 tab（旧版本遗留、
+M6 起打开服务器不再创建新 tab（ssh 以新建窗格的方式在右主区运行），所以常规
+操作下 ssh 行不会凭空变绿：绿表示布局里仍存在与该服务器同名的 tab（旧版本遗留、
 或手动打开的 tab）。服务器条目到 tab 名的映射规则不变：内置 `localhost`
-对应 tab 名 `local`（该行本身只移动焦点、不输入命令），ssh 条目用别名，
+对应 tab 名 `local`（该行本身只新开本地 shell 窗格、不输入命令），ssh 条目用别名，
 servers.txt 条目取 `user@host` 中 `@` 之后的部分（`root@db1` → `db1`）。
 分组文件夹行不画小方块（保留一列空格保持对齐）。
 
@@ -132,12 +135,13 @@ servers.txt 条目取 `user@host` 中 `@` 之后的部分（`root@db1` → `db1`
 | 按键 | 行为 |
 | --- | --- |
 | `j` / `k` / `↑` / `↓` | 上下移动（服务器列表含 `[NEW] [EDIT]` 合并行与分组行，循环可达） |
-| `Enter` | 打开服务器/文件；在 `[NEW] [EDIT]` 合并行触发当前 armed（`▶` 所指）的新建/编辑；在分组文件夹行折叠/展开 |
-| `←` / `→` / `h` / `l` | 服务器区段：光标在 `[NEW] [EDIT]` 行时在新建/编辑之间切换 armed；文件区段返回上级/进入目录 |
+| `Enter` | 打开服务器/文件；在 `[NEW] [EDIT]` 合并行触发当前 armed（`▶` 所指）的新建/编辑；在分组文件夹行折叠/展开。编辑模式下：服务器 → 打开 EDIT 表单，文件夹 → 折叠/展开 |
+| `←` / `→` / `h` / `l` | 服务器区段：光标在 `[NEW] [EDIT]` 行时在新建/编辑之间切换 armed；编辑模式下 `→`/`l` 对服务器打开 EDIT 表单、对文件夹打开「改组名」表单；文件区段返回上级/进入目录 |
 | `n` / `N` | 服务器区段：新建服务器（悬浮表单） |
-| `e` / `E` | 服务器区段：编辑当前选中的 `servers.txt` 条目（光标停在操作行时编辑的是最近选中的服务器） |
+| `e` / `E` | 服务器区段：进入/退出编辑模式（进入后 `<NEW> <EDIT>` + 绿光标并跳到第一个服务器） |
+| `Esc` | 退出编辑模式；清除过滤或取消悬浮表单 |
 | `1` / `2` / `Tab` | `both` 模式切换 pane |
-| `/` | 过滤当前区段；`Esc` 清除过滤 |
+| `/` | 过滤当前区段 |
 | `r` | 刷新服务器、文件或当前区段 |
 | `?` | 显示快捷键提示 |
 | `q` / `Ctrl+C` | 退出 |
@@ -148,23 +152,35 @@ servers.txt 条目取 `user@host` 中 `@` 之后的部分（`root@db1` → `db1`
   （自动 armed `[EDIT]`，与旧版「向上一步到 EDIT」手感一致），再 `k` 从列表
   顶部循环回末尾；`j` 从列表末尾循环回该行（armed `[NEW]`）。`←`/`→`（或
   `h`/`l`）在两项之间切换 armed，`▶` 指在 armed 项前，Enter 触发；鼠标单击
-  操作行左/右半个区域直接触发新建/编辑。
+  操作行左半区域直接新建、右半区域进入编辑模式。
 - `Group` 有值的条目收进 `▾ group/` 文件夹；在该行按 Enter 或双击折叠为
   `▸ group/`（子行隐藏），再按一次展开。`Group` 为空的条目平铺在前，
   内置 `localhost` 恒在首位、不进组。
-- 打开服务器（平铺或组内）行为一致：在 Zellij 内写入右侧主终端窗格
-  （先解析 pane id，`write -p` 直写；解析失败则 `move-focus right` 后写入
-  焦点窗格），不再开新 tab。
-- 内置 `localhost`：Zellij 内执行 `zellij action move-focus right` 聚焦右侧
-  本机 shell pane，不输入命令；不在 Zellij 内时状态栏提示。
+- 打开服务器（平铺或组内）行为一致：在 Zellij 内先 `zellij action
+  move-focus right` 让焦点到右主区，再 `zellij action new-pane -- ssh …`
+  为这台服务器新开一个专属窗格（命令复用 ssh/sshpass 逻辑；每点一次都新开，
+  重复点同一台也再开一个）；不再开新 tab、也不再向已有窗格打字。
+- 内置 `localhost`：Zellij 内执行 move-focus right + `new-pane`（运行本地
+  默认 shell：fish 优先，其次 `$SHELL`，都没有则让 Zellij 用默认 shell），
+  每次点击新开一个本机 shell 窗格；不在 Zellij 内时仅状态栏提示。
+- M6 编辑模式：普通模式按 `e`/`E` 或单击操作行的 `[EDIT]` 半区进入——操作行
+  显示为 `<NEW> <EDIT>`，聚焦指针变绿，光标自动跳到列表最上面的服务器。
+  此时上下移动照常；`Enter` 对服务器 = 打开该服务器的 EDIT 表单、对文件夹 =
+  折叠/展开；`→`/`l` 对服务器 = 打开 EDIT 表单、对文件夹 = 打开「改组名」
+  表单（改名 = 把该组下所有服务器的 `Group` 字段更新为新名；改成空 =
+  解散回平铺；折叠状态随新组名保留），对操作行 = armed `[EDIT]`。
+  `Esc`（或再次 `e`/`E`）退出编辑模式，未确认的改动丢弃。编辑模式下双击
+  服务器同样打开 EDIT 表单（避免误连），双击文件夹仍是折叠/展开。
 
-> 右侧主终端窗格的解析：先尝试 `zellij action dump-layout`（KDL 文本本身
-> 不含 pane id，仅兼容未来带 id 的 JSON dump），再用 `zellij action
-> list-panes --json` 按几何位置取当前 tab 中最靠右的非 nav4neil 终端窗格；
-> 两者都拿不到 pane id 时才退回 `move-focus right`。
+> 打开流程固定为两条 zellij action，无 pane id 解析：先 `move-focus right`
+> 把会话焦点带到右主区（让随后的分屏发生在右侧、不碰左栏导航），再
+> `new-pane -- <命令>`——该命令作为新窗格的 argv 直接执行、不经 shell，
+> 不向任何已有窗格写入按键。打开的焦点会落在右侧新窗格内，返回左栏导航用
+> Zellij 的 Alt+h。
 
 服务器悬浮表单内：`Tab` / 方向键切换字段，`Enter` 保存（Enable），
-`Esc` 取消（Cancel）。
+`Esc` 取消（Cancel）。「改组名」表单同样支持 Tab/方向键、Enter 保存、
+Esc 取消（单字段：Group）。
 
 ## WebSocket（ws）端点
 

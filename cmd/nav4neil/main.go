@@ -17,9 +17,10 @@
 //	--version            打印版本
 //	--help               帮助
 //
-// 与 Zellij 集成：在 zellij pane 内运行时，选择「服务器」会触发
-// `zellij action new-tab --name <tab> -- ssh <host>`。每次都开新 tab，
-// 不动现有布局；不在 zellij 时降级为提示。
+// 与 Zellij 集成：在 zellij pane 内运行时，选择「服务器」会先
+// `zellij action move-focus right` 再 `zellij action new-pane -- ssh …`，
+// 在右侧主区域新开窗格运行该服务器（不再开新 tab、不向已有窗格打字）。
+// localhost 同样 new-pane 打开本地默认 shell。不在 zellij 时降级为提示。
 package main
 
 import (

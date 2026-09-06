@@ -45,7 +45,21 @@ const (
 	svGreen256  = 78  // #5fd787
 	svYellow256 = 214 // #ffaf00
 	svRed256    = 203 // #ff5f5f
+
+	// editPtr256 paints the servers-pane pointer while M6 edit mode is
+	// active (the "green cursor" affordance).
+	editPtr256 = 46 // #00ff00
 )
+
+// pointerCell returns glyph (a one-cell pointer ▶/▷) painted green when the
+// servers pane is in M6 edit mode and colour is available. The escape codes
+// live inside the returned cell only, so padded row bodies never see ANSI.
+func pointerCell(glyph string, edit bool) string {
+	if !edit || !colorEnabled() {
+		return glyph
+	}
+	return "\x1b[38;5;" + strconv.Itoa(editPtr256) + "m" + glyph + "\x1b[0m"
+}
 
 // svGlyph renders the status cell for st: a coloured "▮" when colour is
 // available, a plain "·" otherwise. Either way it occupies exactly one

@@ -40,146 +40,143 @@ func writeTool(t *testing.T, name, body string) string {
 	return p
 }
 
-func TestSshLine_AliasNoPort(t *testing.T) {
-	line, need := SshLine(servers.Entry{Alias: "web01", Source: "ssh", SshAlias: "web01"})
+// ----- ssh argv construction ------------------------------------------------
+
+func TestSshArgv_AliasNoPort(t *testing.T) {
+	argv, need := SshArgv(servers.Entry{Alias: "web01", Source: "ssh", SshAlias: "web01"})
 	if need {
 		t.Fatalf("no password: NeedSshpass must be false")
 	}
-	if line != "ssh web01" {
-		t.Fatalf("line = %q, want %q", line, "ssh web01")
+	want := []string{"ssh", "web01"}
+	if !reflect.DeepEqual(argv, want) {
+		t.Fatalf("argv = %#v, want %#v", argv, want)
 	}
 }
 
-func TestSshLine_LegacyAliasIsSshTarget(t *testing.T) {
-	line, _ := SshLine(servers.Entry{Alias: "root@db1", Source: "extra", SshAlias: "root@db1"})
-	if line != "ssh root@db1" {
-		t.Fatalf("line = %q, want %q", line, "ssh root@db1")
+func TestSshArgv_LegacyAliasIsSshTarget(t *testing.T) {
+	argv, _ := SshArgv(servers.Entry{Alias: "root@db1", Source: "extra", SshAlias: "root@db1"})
+	if !reflect.DeepEqual(argv, []string{"ssh", "root@db1"}) {
+		t.Fatalf("argv = %#v, want ssh root@db1", argv)
 	}
 }
 
-func TestSshLine_StructuredPortAndUser(t *testing.T) {
+func TestSshArgv_StructuredPortAndUser(t *testing.T) {
 	e := servers.Entry{Alias: "db1", Source: "extra", User: "root", Host: "10.0.0.5", Port: 2222}
-	line, _ := SshLine(e)
-	if line != "ssh -p 2222 root@10.0.0.5" {
-		t.Fatalf("line = %q", line)
+	argv, _ := SshArgv(e)
+	if !reflect.DeepEqual(argv, []string{"ssh", "-p", "2222", "root@10.0.0.5"}) {
+		t.Fatalf("argv = %#v", argv)
 	}
 }
 
-func TestSshLine_NoUserOmitsAt(t *testing.T) {
+func TestSshArgv_NoUserOmitsAt(t *testing.T) {
 	e := servers.Entry{Alias: "gw", Source: "extra", Host: "10.0.0.7", Port: 2200}
-	line, _ := SshLine(e)
-	if line != "ssh -p 2200 10.0.0.7" {
-		t.Fatalf("line = %q, want ssh -p 2200 10.0.0.7", line)
+	argv, _ := SshArgv(e)
+	if !reflect.DeepEqual(argv, []string{"ssh", "-p", "2200", "10.0.0.7"}) {
+		t.Fatalf("argv = %#v, want ssh -p 2200 10.0.0.7", argv)
 	}
 }
 
-func TestSshLine_DefaultPortOmitsDashP(t *testing.T) {
+func TestSshArgv_DefaultPortOmitsDashP(t *testing.T) {
 	e := servers.Entry{Alias: "web", Source: "extra", User: "deploy", Host: "web1.example.com", Port: 22}
-	line, _ := SshLine(e)
-	if line != "ssh deploy@web1.example.com" {
-		t.Fatalf("line = %q", line)
+	argv, _ := SshArgv(e)
+	if !reflect.DeepEqual(argv, []string{"ssh", "deploy@web1.example.com"}) {
+		t.Fatalf("argv = %#v", argv)
 	}
 }
 
-func TestSshLine_PasswordQuotedWithSshpass(t *testing.T) {
+// TestSshArgv_PasswordWithSshpass verifies the password reaches sshpass as a
+// raw argv element (zellij new-pane execs argv directly — no shell quoting).
+func TestSshArgv_PasswordWithSshpass(t *testing.T) {
 	t.Setenv("PATH", fakeTool(t, "sshpass"))
-	e := servers.Entry{Alias: "db1", Source: "extra", User: "root", Host: "10.0.0.5", Port: 2222, Password: "s3cr3t"}
-	line, need := SshLine(e)
+	e := servers.Entry{Alias: "db1", Source: "extra", User: "root", Host: "10.0.0.5", Port: 2222, Password: "s3 cr3t'x"}
+	argv, need := SshArgv(e)
 	if need {
 		t.Fatalf("sshpass present: NeedSshpass must be false")
 	}
-	want := "sshpass -p 's3cr3t' ssh -p 2222 root@10.0.0.5"
-	if line != want {
-		t.Fatalf("line = %q, want %q", line, want)
+	want := []string{"sshpass", "-p", "s3 cr3t'x", "ssh", "-p", "2222", "root@10.0.0.5"}
+	if !reflect.DeepEqual(argv, want) {
+		t.Fatalf("argv = %#v, want %#v", argv, want)
 	}
 }
 
-func TestSshLine_PasswordMissingSshpass_Hint(t *testing.T) {
+func TestSshArgv_PasswordMissingSshpass_Hint(t *testing.T) {
 	t.Setenv("PATH", emptyPathDir(t))
 	e := servers.Entry{Alias: "db1", Source: "extra", User: "root", Host: "10.0.0.5", Port: 22, Password: "s3cr3t"}
-	line, need := SshLine(e)
+	argv, need := SshArgv(e)
 	if !need {
 		t.Fatalf("sshpass missing with password: NeedSshpass must be true")
 	}
-	if strings.Contains(line, "sshpass") {
-		t.Fatalf("hint line must not start sshpass: %q", line)
+	if len(argv) != 0 {
+		t.Fatalf("hint argv must be empty, got %#v", argv)
 	}
 }
 
-// TestSshWritePlan_WithPaneID pins the exact write sequence typed into the
-// right main pane when a concrete pane id was resolved: Ctrl+C first, then
-// the ssh line + Enter, both targeted with -p (focus stays in nav4neil).
-func TestSshWritePlan_WithPaneID(t *testing.T) {
+// ----- new-pane plans -------------------------------------------------------
+
+// TestSshNewPanePlan_Steps pins the exact M6 sequence: move focus right so
+// the split lands in the right main area, then new-pane running the ssh
+// argv. Nothing is ever typed into an existing pane.
+func TestSshNewPanePlan_Steps(t *testing.T) {
 	e := servers.Entry{Alias: "db1", Source: "extra", User: "root", Host: "10.0.0.5", Port: 2222}
-	p := SshWritePlan(e, "1")
-	if !p.UseZellij || p.Detected != "no-zellij" {
-		t.Fatalf("metadata wrong (no zellij env here): %+v", p)
+	p := SshNewPanePlan(e)
+	if !p.UseZellij || p.Detected != "zellij" {
+		t.Fatalf("metadata wrong: %+v", p)
 	}
 	if p.TabName != "db1" || p.SshTarget != "root@10.0.0.5" {
 		t.Fatalf("metadata wrong: %+v", p)
 	}
 	want := [][]string{
-		{"zellij", "action", "write", "-p", "1", "\u0003"},
-		{"zellij", "action", "write", "-p", "1", "ssh -p 2222 root@10.0.0.5\r"},
+		{"zellij", "action", "move-focus", "right"},
+		{"zellij", "action", "new-pane", "--", "ssh", "-p", "2222", "root@10.0.0.5"},
 	}
 	if !reflect.DeepEqual(p.Steps, want) {
 		t.Fatalf("Steps = %#v\nwant %#v", p.Steps, want)
 	}
 	for _, s := range p.Steps {
-		if strings.Contains(strings.Join(s, " "), "new-tab") {
-			t.Fatalf("M5 must never open a new tab: %v", s)
+		joined := strings.Join(s, " ")
+		if strings.Contains(joined, "new-tab") || strings.Contains(joined, "write") {
+			t.Fatalf("M6 must never open a tab or type into a pane: %v", s)
 		}
 	}
 }
 
-func TestSshWritePlan_PasswordSshpassInSequence(t *testing.T) {
+func TestSshNewPanePlan_PasswordSshpassInArgv(t *testing.T) {
 	t.Setenv("PATH", fakeTool(t, "sshpass"))
 	e := servers.Entry{Alias: "db1", Source: "extra", User: "root", Host: "10.0.0.5", Port: 22, Password: "pw"}
-	p := SshWritePlan(e, "terminal_2")
+	p := SshNewPanePlan(e)
 	last := p.Steps[len(p.Steps)-1]
-	if last[len(last)-1] != "sshpass -p 'pw' ssh root@10.0.0.5\r" {
-		t.Fatalf("write payload must carry sshpass line: %v", last)
+	want := []string{"zellij", "action", "new-pane", "--", "sshpass", "-p", "pw", "ssh", "root@10.0.0.5"}
+	if !reflect.DeepEqual(last, want) {
+		t.Fatalf("new-pane argv must carry sshpass: %#v want %#v", last, want)
 	}
 }
 
-func TestSshWritePlan_NoPaneIDMovesFocusFirst(t *testing.T) {
-	e := servers.Entry{Alias: "web01", Source: "ssh", SshAlias: "web01"}
-	p := SshWritePlan(e, "")
-	want := [][]string{
-		{"zellij", "action", "move-focus", "right"},
-		{"zellij", "action", "write", "\u0003"},
-		{"zellij", "action", "write", "ssh web01\r"},
-	}
-	if !reflect.DeepEqual(p.Steps, want) {
-		t.Fatalf("Steps = %#v\nwant %#v", p.Steps, want)
-	}
-}
-
-func TestSshWritePlan_PasswordMissingSshpass_HintPlan(t *testing.T) {
+func TestSshNewPanePlan_PasswordMissingSshpass_HintPlan(t *testing.T) {
 	t.Setenv("PATH", emptyPathDir(t))
 	e := servers.Entry{Alias: "db1", Source: "extra", User: "root", Host: "10.0.0.5", Password: "s3cr3t"}
-	p := SshWritePlan(e, "1")
+	p := SshNewPanePlan(e)
 	if !p.NeedSshpass || len(p.Steps) != 0 || p.UseZellij {
 		t.Fatalf("hint plan shape wrong: %+v", p)
 	}
 }
 
-func TestBuild_InZellij_SshFallsBackToFocusedPane(t *testing.T) {
+func TestBuild_InZellij_SshUsesNewPane(t *testing.T) {
 	t.Setenv("ZELLIJ", "1")
 	e := servers.Entry{Alias: "github.com", Source: "ssh", SshAlias: "github.com"}
 	p := Build(e)
 	if !p.UseZellij || p.Detected != "zellij" {
 		t.Fatalf("expected in-zellij plan: %+v", p)
 	}
-	if len(p.Steps) != 3 || p.Steps[0][0] != "zellij" {
+	if len(p.Steps) != 2 || p.Steps[0][0] != "zellij" {
 		t.Fatalf("steps wrong: %#v", p.Steps)
 	}
-	if !strings.Contains(p.Steps[2][len(p.Steps[2])-1], "ssh github.com") {
-		t.Fatalf("ssh payload missing alias: %v", p.Steps[2])
+	if !reflect.DeepEqual(p.Steps[1], []string{"zellij", "action", "new-pane", "--", "ssh", "github.com"}) {
+		t.Fatalf("second step must be new-pane with the ssh argv: %#v", p.Steps[1])
 	}
 	for _, s := range p.Steps {
-		if strings.Contains(strings.Join(s, " "), "new-tab") {
-			t.Fatalf("M5 must never open a new tab: %v", s)
+		joined := strings.Join(s, " ")
+		if strings.Contains(joined, "new-tab") || strings.Contains(joined, "write") {
+			t.Fatalf("M6 must never open a tab or type into a pane: %v", s)
 		}
 	}
 }
@@ -201,28 +198,75 @@ func TestBuild_OutsideZellij_IsHintOnly(t *testing.T) {
 	}
 }
 
-func TestBuild_LocalhostInsideZellijMovesFocusRight(t *testing.T) {
+func TestBuild_LocalhostInsideZellijOpensLocalPane(t *testing.T) {
 	t.Setenv("ZELLIJ", "1")
 	p := Build(servers.Entry{Alias: "localhost", Source: "builtin"})
-	want := [][]string{{"zellij", "action", "move-focus", "right"}}
-	if !reflect.DeepEqual(p.Steps, want) {
-		t.Fatalf("Steps = %v, want %v", p.Steps, want)
-	}
-	if p.TabName != "local" || p.Detected != "zellij" {
+	if p.TabName != "local" || p.Detected != "zellij" || !p.UseZellij {
 		t.Fatalf("metadata wrong: %+v", p)
+	}
+	if len(p.Steps) != 2 {
+		t.Fatalf("localhost must move focus right then new-pane: %#v", p.Steps)
+	}
+	if !reflect.DeepEqual(p.Steps[0], []string{"zellij", "action", "move-focus", "right"}) {
+		t.Fatalf("step 0 must move focus right: %#v", p.Steps[0])
+	}
+	if p.Steps[1][0] != "zellij" || p.Steps[1][2] != "new-pane" {
+		t.Fatalf("step 1 must be a new-pane: %#v", p.Steps[1])
 	}
 }
 
-func TestLocalhostPlan_Shape(t *testing.T) {
-	p := LocalhostPlan()
-	want := [][]string{{"zellij", "action", "move-focus", "right"}}
+func TestLocalhostNewPanePlan_WithShell(t *testing.T) {
+	p := LocalhostNewPanePlan("fish")
+	want := [][]string{
+		{"zellij", "action", "move-focus", "right"},
+		{"zellij", "action", "new-pane", "--", "fish"},
+	}
 	if !reflect.DeepEqual(p.Steps, want) {
-		t.Fatalf("LocalhostPlan Steps = %v, want %v", p.Steps, want)
+		t.Fatalf("LocalhostNewPanePlan Steps = %#v, want %#v", p.Steps, want)
 	}
 	if p.TabName != "local" || !p.UseZellij {
-		t.Fatalf("LocalhostPlan metadata wrong: %+v", p)
+		t.Fatalf("LocalhostNewPanePlan metadata wrong: %+v", p)
 	}
 }
+
+func TestLocalhostNewPanePlan_NoShellDefaultsToNewPane(t *testing.T) {
+	p := LocalhostNewPanePlan("")
+	want := [][]string{
+		{"zellij", "action", "move-focus", "right"},
+		{"zellij", "action", "new-pane"},
+	}
+	if !reflect.DeepEqual(p.Steps, want) {
+		t.Fatalf("LocalhostNewPanePlan Steps = %#v, want %#v", p.Steps, want)
+	}
+}
+
+// ----- local shell resolution -----------------------------------------------
+
+func TestLocalShell_PrefersFish(t *testing.T) {
+	t.Setenv("PATH", fakeTool(t, "fish"))
+	t.Setenv("SHELL", "/bin/bash")
+	if got := LocalShell(); got != "fish" {
+		t.Fatalf("LocalShell() = %q, want fish (fish wins over $SHELL)", got)
+	}
+}
+
+func TestLocalShell_FallsBackToShell(t *testing.T) {
+	t.Setenv("PATH", emptyPathDir(t))
+	t.Setenv("SHELL", "/usr/bin/zsh")
+	if got := LocalShell(); got != "/usr/bin/zsh" {
+		t.Fatalf("LocalShell() = %q, want $SHELL fallback", got)
+	}
+}
+
+func TestLocalShell_EmptyWithoutBoth(t *testing.T) {
+	t.Setenv("PATH", emptyPathDir(t))
+	t.Setenv("SHELL", "")
+	if got := LocalShell(); got != "" {
+		t.Fatalf("LocalShell() = %q, want empty (zellij default shell)", got)
+	}
+}
+
+// ----- tab names -------------------------------------------------------------
 
 func TestTab_CanonicalNames(t *testing.T) {
 	cases := []struct {
@@ -244,94 +288,7 @@ func TestTab_CanonicalNames(t *testing.T) {
 	}
 }
 
-// ----- main-pane id parsing -------------------------------------------------
-
-// realSidebarPanes is the terminal-pane subset captured from a live
-// sidebar.kdl session (Zellij 0.45.1, `list-panes --all --json`), plus the
-// plugin rows for realism. terminal_1 (💻 终端, x=28) is the right main pane.
-const realSidebarPanes = `[
-  {"id":0,"is_plugin":true,"is_focused":false,"title":"(.) - zellij:link","pane_x":35,"pane_rows":14,"tab_id":0},
-  {"id":0,"is_plugin":false,"is_focused":false,"title":"nav4neil-servers","pane_command":"nav4neil --section servers","pane_x":0,"pane_y":1,"pane_rows":14,"tab_id":0},
-  {"id":1,"is_plugin":false,"is_focused":true,"title":"💻 终端","pane_command":"fish","pane_x":28,"pane_y":1,"pane_rows":28,"tab_id":0},
-  {"id":2,"is_plugin":false,"is_focused":false,"title":"nav4neil-files","pane_command":"nav4neil --section files","pane_x":0,"pane_y":15,"pane_rows":14,"tab_id":0},
-  {"id":1,"is_plugin":true,"is_focused":false,"title":"zellij:tab-bar","plugin_url":"zellij:tab-bar","pane_x":0,"pane_rows":1,"tab_id":0}
-]`
-
-func TestRightPaneIDFromPanes_RealSidebarFixture(t *testing.T) {
-	if got := rightPaneIDFromPanes(realSidebarPanes); got != "1" {
-		t.Fatalf("rightPaneIDFromPanes = %q, want 1 (💻 终端)", got)
-	}
-}
-
-func TestRightPaneIDFromPanes_IgnoresOtherTabs(t *testing.T) {
-	// A leftover ssh tab (id 7) sits in tab 1; the nav pane lives in tab 0,
-	// so the right main pane of tab 0 (id 1) must still win.
-	in := `[
-	  {"id":7,"is_plugin":false,"title":"ssh pane in another tab","pane_command":"ssh github.com","pane_x":0,"pane_rows":24,"tab_id":1},
-	  {"id":0,"is_plugin":false,"title":"nav4neil-servers","pane_command":"nav4neil --section servers","pane_x":0,"pane_rows":14,"tab_id":0},
-	  {"id":1,"is_plugin":false,"is_focused":true,"title":"💻 终端","pane_command":"fish","pane_x":28,"pane_rows":28,"tab_id":0}
-	]`
-	if got := rightPaneIDFromPanes(in); got != "1" {
-		t.Fatalf("rightPaneIDFromPanes = %q, want 1", got)
-	}
-}
-
-func TestRightPaneIDFromPanes_TiePrefersTaller(t *testing.T) {
-	in := `[
-	  {"id":0,"is_plugin":false,"title":"nav4neil-servers","pane_command":"nav4neil --section servers","pane_x":0,"pane_rows":14,"tab_id":0},
-	  {"id":3,"is_plugin":false,"title":"top right","pane_command":"bash","pane_x":30,"pane_rows":10,"tab_id":0},
-	  {"id":4,"is_plugin":false,"title":"main right","pane_command":"fish","pane_x":30,"pane_rows":20,"tab_id":0}
-	]`
-	if got := rightPaneIDFromPanes(in); got != "4" {
-		t.Fatalf("rightPaneIDFromPanes = %q, want 4 (tallest right pane)", got)
-	}
-}
-
-func TestRightPaneIDFromPanes_NoRightPane(t *testing.T) {
-	// Only our own nav panes exist — nothing right of us to write into.
-	in := `[
-	  {"id":0,"is_plugin":false,"title":"nav4neil-servers","pane_command":"nav4neil --section servers","pane_x":0,"pane_rows":14,"tab_id":0},
-	  {"id":2,"is_plugin":false,"title":"nav4neil-files","pane_command":"nav4neil --section files","pane_x":0,"pane_rows":14,"tab_id":0}
-	]`
-	if got := rightPaneIDFromPanes(in); got != "" {
-		t.Fatalf("expected no target pane, got %q", got)
-	}
-}
-
-func TestRightPaneIDFromLayout_KDLTextHasNoIDs(t *testing.T) {
-	// Zellij 0.45.x dump-layout text never carries pane ids (verified against
-	// live sessions) — the resolver must return "" and let the fallback steer.
-	in := `layout {
-    cwd "/home/neil"
-    tab name="Workspace" hide_floating_panes=true {
-        pane size=1 borderless=true { plugin location="zellij:tab-bar" }
-        pane split_direction="vertical" {
-            pane size="20%" {
-                pane command="nav4neil" name="nav4neil-servers" size="50%" { args "--section" "servers" }
-                pane command="nav4neil" name="nav4neil-files" size="50%" { args "--section" "files" }
-            }
-            pane name="💻 终端" focus=true size="80%"
-        }
-    }
-}`
-	if got := rightPaneIDFromLayout(in); got != "" {
-		t.Fatalf("KDL text must yield no id, got %q", got)
-	}
-}
-
-func TestRightPaneIDFromLayout_JSONShape(t *testing.T) {
-	// A future JSON layout dump embedding the same pane records as
-	// list-panes should resolve through the same picker.
-	in := `{"tabs":[{"name":"Workspace","panes":[` +
-		`{"id":0,"is_plugin":false,"title":"nav4neil-servers","pane_command":"nav4neil --section servers","pane_x":0,"pane_rows":14,"tab_id":0},` +
-		`{"id":1,"is_plugin":false,"title":"💻 终端","pane_command":"fish","pane_x":28,"pane_rows":28,"tab_id":0}` +
-		`]}]}`
-	if got := rightPaneIDFromLayout(in); got != "1" {
-		t.Fatalf("rightPaneIDFromLayout(json) = %q, want 1", got)
-	}
-}
-
-// ----- execution ------------------------------------------------------------
+// ----- execution -------------------------------------------------------------
 
 func TestRun_ZeroExitIsSuccess(t *testing.T) {
 	tool := writeTool(t, "okcmd", "#!/bin/sh\nexit 0\n")
