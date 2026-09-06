@@ -9,26 +9,32 @@
 - 解析 `~/.ssh/config` 与 `~/.config/wezterm4neil/servers.txt`，在服务器区段
   显示别名、可选说明和连接目标。
 - 服务器区段可直接管理 `servers.txt`：`servers` 单区顶部为 `serv4neil` 标题行，
-  其下是聚焦式的 `[NEW]`/`[EDIT]` 列表行（↑/↓、j/k 可循环到达，Enter 或鼠标
-  单击触发），`n`/`N` 新建、`e`/`E` 编辑当前选中的 `servers.txt` 条目
-  （内置 `localhost` 与 `~/.ssh/config` 条目只读，会给出提示）。
+  其下是一行合并的 `[NEW] [EDIT]` 操作项（左右并列，不再换行分列）。
+  ↑/↓、j/k 循环到达该行，`←`/`→` 或 `h`/`l` 选择（armed）其中一项，Enter 或
+  鼠标单击对应半个区域触发；`n`/`N` 新建、`e`/`E` 编辑当前选中的
+  `servers.txt` 条目（内置 `localhost` 与 `~/.ssh/config` 条目只读，会给出提示）。
   表单支持 Tab/方向键切换字段、Enter 保存（Enable）、Esc 取消（Cancel）。
 - 保存的 `servers.txt` 新行格式为
   `<name>|<user>@<host>:<port>|<desc>|<group>|<password>`（仍兼容旧
   `<name>|<desc>`）；保存后自动刷新列表，内置 `localhost` 恒在最前且
   不允许被新增条目占用。
-- 带密码的条目用 `sshpass -p <pw> ssh -p <port> <user>@<host>` 连接；
-  系统缺少 `sshpass` 时状态栏提示安装；无密码走原有 ssh 逻辑
-  （`zellij action new-tab` / 直连）。
+- 带密码的条目用 `sshpass -p '<pw>' ssh [-p <port>] <user>@<host>` 连接；
+  系统缺少 `sshpass` 时状态栏提示安装；无密码走 `ssh [-p <port>] <user>@<host>`。
 - `Group` 有值的条目按组渲染为 `▾ group/` 文件夹（Enter 或双击折叠成 `▸ group/`，
-  组内服务器为子行，打开方式不变）；`Group` 为空的条目平铺在列表顶部，
-  内置 `localhost` 恒在最前、永不进组。持久化格式不变。
-- 服务器行首显示连接状态小方块（Zellij tab 轮询 + 失败记账，见下文
-  「服务器状态方块」）。
+  组内服务器为子行，名称缩进在组名之下、打开方式与平铺行相同）；`Group` 为空
+  的条目平铺在列表顶部，内置 `localhost` 恒在最前、永不进组。持久化格式不变。
+- 服务器行按「指针 → 状态小方块 → 名称」排布：小方块紧贴名称左侧（不是隔在
+  指针前面），颜色含义见下文「服务器状态方块」；分组文件夹行不画小方块
+  （保留一个空格列保持对齐），组名与子行名称对齐。
 - 文件区段支持目录进入/返回、过滤、刷新、鼠标点击与 Nerd Font 文件图标。
-- 在 Zellij 内选择服务器时执行 `zellij action new-tab --name <tab> -- ssh <target>`，
-  不替换当前 pane。
-- 内置 `localhost` 不新开 tab：在 Zellij 内点击/Enter 它时执行
+- 所有服务器（含 ssh 服务器）都在 **当前 Zellij tab 的右侧主终端窗格** 内使用，
+  不再开新 tab 全屏：选中时先解析右侧主终端窗格的 pane id，然后向该窗格写入
+  `Ctrl+C`（清空当前行）和 `ssh …` 命令（带 `\r` 回车）。解析到 pane id 时用
+  `zellij action write -p <paneId>` 直写（nav4neil 不丢焦点）；解析不到时退回
+  `zellij action move-focus right` 后写入焦点窗格。不在 Zellij 内仅状态栏提示。
+  重复选择同一个/另一个服务器会向当前窗格（可能已是某台远程主机）再次输入，
+  这是 v1 的可接受行为。
+- 内置 `localhost` 不输入任何命令：在 Zellij 内点击/Enter 它时执行
   `zellij action move-focus right`，把焦点交给右侧本机 shell pane；
   不在 Zellij 内时仅状态栏提示，无副作用。
 - 默认启动一个仅绑定 `127.0.0.1` 的 HTTP/WebSocket 上下文服务；服务不可用时
@@ -92,26 +98,29 @@ layout {
 
 文件区段以 `~` 表示 `$HOME`，超长路径从左侧截断。`both` 布局中
 `neilwz-servers` 是服务器 pane 头行；`servers` 单区模式则以
-`serv4neil` 标题行开头，列表最前两行是聚焦式的 `[NEW]`/`[EDIT]`
-伪条目（不再使用单独的装饰操作行）。服务器行以状态小方块开头，
-选中行保留 `▶`/`▷` 指示（聚焦行显示为 `▮ ▶ 名称…`，未聚焦/未选中行
-以空格占位保持名称列对齐）；分组文件夹形如 `  ▾ group/`，子行缩进
-对齐在组名之下；文件行在名称前显示 Nerd Font 图标。
+`serv4neil` 标题行开头，紧接一行 `[NEW] [EDIT]` 合并操作项（不再使用
+分开的装饰操作行）。服务器行排布为「指针 → 状态小方块 → 名称」：
+聚焦行形如 `▶ ▮localhost`，未聚焦行用空格占位保持方块列对齐
+（`  ▮web01`）；分组文件夹行省略小方块、形如 `  ▾ dc/`，子行缩进
+对齐在组名之下（`  ▮  db1`）；文件行在名称前显示 Nerd Font 图标。
 
 ## 服务器状态方块
 
-服务器列表每行最前面有一个小方块，指示该服务器此刻的连接状态：
+每行服务器名称的左侧紧贴一个彩色小方块（顺序：指针 → 方块 → 名称），
+指示该服务器此刻的连接状态：
 
 | 方块 | 含义 |
 | --- | --- |
-| ▮ 绿 | Zellij 中正开着该服务器对应的 tab（约 2.5 s 轮询一次 `zellij action dump-layout`；仅当本进程运行在 Zellij 内时启用） |
+| ▮ 绿 | Zellij 布局里正开着该服务器对应的 tab（约 2.5 s 轮询一次 `zellij action dump-layout`；仅当本进程运行在 Zellij 内时启用） |
 | ▮ 黄 | 无对应 tab / 尚未打开（默认） |
 | ▮ 红 | 最近一次打开该服务器失败或异常；下一次成功打开、或对应 tab 重新出现后自动清除 |
 
-服务器条目到 tab 名的映射与打开时 `zellij action new-tab --name` 完全
-一致：内置 `localhost` 对应 tab 名 `local`（该行本身不再开 tab，只把焦点
-移到右侧 pane；小方块反映布局里是否已有名为 `local` 的 tab），ssh 条目用
-别名，servers.txt 条目取 `user@host` 中 `@` 之后的部分（`root@db1` → `db1`）。
+M5 起打开服务器不再创建新 tab（ssh 直接写入右侧主窗格），所以常规操作下
+ssh 行不会凭空变绿：绿表示布局里仍存在与该服务器同名的 tab（旧版本遗留、
+或手动打开的 tab）。服务器条目到 tab 名的映射规则不变：内置 `localhost`
+对应 tab 名 `local`（该行本身只移动焦点、不输入命令），ssh 条目用别名，
+servers.txt 条目取 `user@host` 中 `@` 之后的部分（`root@db1` → `db1`）。
+分组文件夹行不画小方块（保留一列空格保持对齐）。
 
 不在 Zellij 内或轮询失败时自动退回本地记账：打开成功记绿、打开失败
 （命令无法启动或非零退出）记红。轮询只读、静默失败、不阻塞 UI，并带
@@ -122,11 +131,11 @@ layout {
 
 | 按键 | 行为 |
 | --- | --- |
-| `j` / `k` / `↑` / `↓` | 上下移动（服务器列表含 `[NEW]`/`[EDIT]` 伪条目与分组行，循环可达） |
-| `Enter` | 打开服务器/文件；在 `[NEW]`/`[EDIT]` 行触发新建/编辑；在分组文件夹行折叠/展开 |
+| `j` / `k` / `↑` / `↓` | 上下移动（服务器列表含 `[NEW] [EDIT]` 合并行与分组行，循环可达） |
+| `Enter` | 打开服务器/文件；在 `[NEW] [EDIT]` 合并行触发当前 armed（`▶` 所指）的新建/编辑；在分组文件夹行折叠/展开 |
+| `←` / `→` / `h` / `l` | 服务器区段：光标在 `[NEW] [EDIT]` 行时在新建/编辑之间切换 armed；文件区段返回上级/进入目录 |
 | `n` / `N` | 服务器区段：新建服务器（悬浮表单） |
-| `e` / `E` | 服务器区段：编辑当前选中的 `servers.txt` 条目（光标停在 `[EDIT]` 行时编辑的是最近选中的服务器） |
-| `h` / `l` / `←` / `→` | 文件区段返回上级/进入目录 |
+| `e` / `E` | 服务器区段：编辑当前选中的 `servers.txt` 条目（光标停在操作行时编辑的是最近选中的服务器） |
 | `1` / `2` / `Tab` | `both` 模式切换 pane |
 | `/` | 过滤当前区段；`Esc` 清除过滤 |
 | `r` | 刷新服务器、文件或当前区段 |
@@ -135,15 +144,24 @@ layout {
 
 服务器区段要点：
 
-- `[NEW]`/`[EDIT]` 是列表顶部的两个可聚焦伪条目：`k` 从第一个服务器往上
-  即到 `[EDIT]`、再 `k` 到 `[NEW]`；`j` 从列表末尾循环回 `[NEW]`。聚焦时
-  行首显示 `▶`，Enter 或鼠标单击即触发。
+- `[NEW] [EDIT]` 合并为标题下的一行操作项：`k` 从第一个服务器往上即到达该行
+  （自动 armed `[EDIT]`，与旧版「向上一步到 EDIT」手感一致），再 `k` 从列表
+  顶部循环回末尾；`j` 从列表末尾循环回该行（armed `[NEW]`）。`←`/`→`（或
+  `h`/`l`）在两项之间切换 armed，`▶` 指在 armed 项前，Enter 触发；鼠标单击
+  操作行左/右半个区域直接触发新建/编辑。
 - `Group` 有值的条目收进 `▾ group/` 文件夹；在该行按 Enter 或双击折叠为
   `▸ group/`（子行隐藏），再按一次展开。`Group` 为空的条目平铺在前，
   内置 `localhost` 恒在首位、不进组。
-- 打开服务器（平铺或组内）行为一致：非 localhost 才开新 tab。
+- 打开服务器（平铺或组内）行为一致：在 Zellij 内写入右侧主终端窗格
+  （先解析 pane id，`write -p` 直写；解析失败则 `move-focus right` 后写入
+  焦点窗格），不再开新 tab。
 - 内置 `localhost`：Zellij 内执行 `zellij action move-focus right` 聚焦右侧
-  本机 shell pane，不再全屏开新 tab；不在 Zellij 内时状态栏提示。
+  本机 shell pane，不输入命令；不在 Zellij 内时状态栏提示。
+
+> 右侧主终端窗格的解析：先尝试 `zellij action dump-layout`（KDL 文本本身
+> 不含 pane id，仅兼容未来带 id 的 JSON dump），再用 `zellij action
+> list-panes --json` 按几何位置取当前 tab 中最靠右的非 nav4neil 终端窗格；
+> 两者都拿不到 pane id 时才退回 `move-focus right`。
 
 服务器悬浮表单内：`Tab` / 方向键切换字段，`Enter` 保存（Enable），
 `Esc` 取消（Cancel）。

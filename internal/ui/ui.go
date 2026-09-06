@@ -102,10 +102,17 @@ func (s Section) String() string {
 type srvRowKind int
 
 const (
-	srvRowNew   srvRowKind = iota // [NEW] pseudo entry (SectionServers only)
-	srvRowEdit                    // [EDIT] pseudo entry (SectionServers only)
+	srvRowOps   srvRowKind = iota // combined [NEW]/[EDIT] ops row (SectionServers only)
 	srvRowEntry                   // a real server entry (flat or inside a group)
 	srvRowGroup                   // a group folder, ▾ expanded / ▸ collapsed
+)
+
+// srvOp selects the armed operation inside the single ops row.
+type srvOp int
+
+const (
+	opNew  srvOp = iota // [NEW]
+	opEdit              // [EDIT]
 )
 
 // srvRow is one focusable row of the servers pane. entry is valid for
@@ -159,10 +166,11 @@ type Model struct {
 	serverCursor int
 	serverFilter string
 
-	// M4 row model: the servers pane is rendered as an ordered list of
-	// focusable rows — [NEW]/[EDIT] pseudo entries (single-section mode
+	// M4/M5 row model: the servers pane is rendered as an ordered list of
+	// focusable rows — a combined [NEW]/[EDIT] ops row (single-section mode
 	// only), ungrouped "flat" entries, then ▾/▸ group folders with their
-	// children. srvCursor indexes srvRows and drives highlighting;
+	// children. opsSel arms which op Enter triggers while the cursor rests on
+	// the ops row. srvCursor indexes srvRows and drives highlighting;
 	// serverCursor keeps the selected ENTRY inside serversView so open/edit
 	// actions keep working while the display cursor rests on an ops or
 	// folder row. srvTop scrolls the window when a grouped list grows
@@ -170,6 +178,7 @@ type Model struct {
 	srvRows   []srvRow
 	srvCursor int
 	srvTop    int
+	opsSel    srvOp
 	collapsed map[string]bool // group name → folded (children hidden)
 
 	// M3 connection-status squares: in-Zellij we poll dump-layout for open
@@ -424,7 +433,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func helpText(s Section) string {
 	switch s {
 	case SectionServers:
-		return "j/k move (new/edit reachable) · enter open or fold group · n new · e edit · / filter · r refresh · ? help · q quit"
+		return "j/k move · ←/→ or h/l arm [NEW]/[EDIT] · enter open or fold group · n new · e edit · / filter · r refresh · ? help · q quit"
 	case SectionFiles:
 		return "j/k move · enter open · h/l parent/into · / filter · r refresh dir · ? help · q quit"
 	default:
@@ -445,6 +454,17 @@ func (m *Model) handleServersKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.srvCursor = n - 1
 			m.syncSelectionToRow()
 		}
+	case "h", "left":
+		// On the ops row, ←/h arm [NEW]; elsewhere the key is unused in the
+		// servers pane (left/right do not exist for entry rows).
+		if m.onOpsRow() {
+			m.opsSel = opNew
+		}
+	case "l", "right":
+		// On the ops row, →/l arm [EDIT].
+		if m.onOpsRow() {
+			m.opsSel = opEdit
+		}
 	case "n", "N":
 		m.openServerForm(servers.Entry{Source: "extra"}, false)
 	case "e", "E":
@@ -455,19 +475,35 @@ func (m *Model) handleServersKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// onOpsRow reports whether the display cursor rests on the combined ops row.
+func (m *Model) onOpsRow() bool {
+	return m.srvCursor >= 0 && m.srvCursor < len(m.srvRows) && m.srvRows[m.srvCursor].kind == srvRowOps
+}
+
 // moveSrvCursor steps the display cursor by d (±1), wrapping around the row
-// list so ↑/↓ (j/k) cycle NEW → EDIT → first server → … → last → NEW.
+// list so ↑/↓ (j/k) cycle ops row → first server → … → last → ops row.
+// Arriving on the ops row arms the op matching the travel direction: coming
+// up from the servers (d<0) arms [EDIT] (the row that used to sit directly
+// above the first server), wrapping down from the bottom (d>0) arms [NEW].
 func (m *Model) moveSrvCursor(d int) {
 	n := len(m.srvRows)
 	if n == 0 {
 		return
 	}
+	old := m.srvCursor
 	m.srvCursor = (m.srvCursor + d + n) % n
+	if m.srvRows[m.srvCursor].kind == srvRowOps {
+		if d > 0 {
+			m.opsSel = opNew
+		} else if old != m.srvCursor {
+			m.opsSel = opEdit
+		}
+	}
 	m.syncSelectionToRow()
 }
 
 // jumpSrvFirstEntry sends the cursor to the first real server row, skipping
-// the [NEW]/[EDIT] pseudo entries (localhost is the very first entry).
+// the ops row (localhost is the very first entry).
 func (m *Model) jumpSrvFirstEntry() {
 	for i, r := range m.srvRows {
 		if r.kind == srvRowEntry {
@@ -500,8 +536,8 @@ func (m *Model) syncSelectionToRow() {
 }
 
 // activateServerRow runs the action of the row under the display cursor:
-// NEW/EDIT open their overlays, a folder row toggles collapse, an entry row
-// connects to the server.
+// the ops row opens the armed overlay (NEW/EDIT), a folder row toggles
+// collapse, an entry row connects to the server.
 func (m *Model) activateServerRow() {
 	if len(m.srvRows) == 0 {
 		m.status = "no servers to open (refresh with r)"
@@ -509,10 +545,12 @@ func (m *Model) activateServerRow() {
 	}
 	r := m.srvRows[m.srvCursor]
 	switch r.kind {
-	case srvRowNew:
-		m.openServerForm(servers.Entry{Source: "extra"}, false)
-	case srvRowEdit:
-		m.editSelectedServer()
+	case srvRowOps:
+		if m.opsSel == opEdit {
+			m.editSelectedServer()
+		} else {
+			m.openServerForm(servers.Entry{Source: "extra"}, false)
+		}
 	case srvRowGroup:
 		m.toggleGroup(r.group)
 	case srvRowEntry:
@@ -654,7 +692,9 @@ func (m *Model) rebuildServerView() {
 
 // rebuildServerRows builds the focusable row list from serversView:
 //
-//   - SectionServers mode prepends the [NEW] and [EDIT] pseudo rows;
+//   - SectionServers mode prepends the single ops row ([NEW] and [EDIT] are
+//     rendered side by side on that one line; opsSel arms which one Enter
+//     triggers);
 //   - an active filter flattens every match (groups are skipped so a partial
 //     match list stays navigable);
 //   - otherwise ungrouped entries are listed first (localhost stays the very
@@ -672,7 +712,7 @@ func (m *Model) rebuildServerRows() {
 	q := strings.ToLower(m.serverFilter)
 	var rows []srvRow
 	if m.section == SectionServers {
-		rows = append(rows, srvRow{kind: srvRowNew}, srvRow{kind: srvRowEdit})
+		rows = append(rows, srvRow{kind: srvRowOps})
 	}
 	if q != "" {
 		for _, e := range m.serversView {
@@ -788,12 +828,13 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		switch m.section {
 		case SectionServers:
 			// Row 0 is the product title; the whole remaining area above the
-			// status bar is the focusable row list (starting with the [NEW]
-			// and [EDIT] pseudo rows). A single click on NEW/EDIT activates
-			// the action; entry rows select on click and open on double
-			// click; folder rows select on click and fold on double click.
+			// status bar is the focusable row list (starting with the single
+			// ops row that carries [NEW] and [EDIT] side by side). A single
+			// click on either op activates it; entry rows select on click and
+			// open on double click; folder rows select on click and fold on
+			// double click.
 			if y >= 1 && y < m.height-1 {
-				m.clickServerListRow(y-1, double)
+				m.clickServerListRow(msg.X, y-1, double)
 			}
 			return m, nil
 		case SectionFiles:
@@ -808,7 +849,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		// SectionBoth: server rows start immediately after the server header.
 		if y >= 1 && y < m.serverListEnd() {
 			m.focus = paneServers
-			m.clickServerListRow(y-1, double)
+			m.clickServerListRow(msg.X, y-1, double)
 			return m, nil
 		}
 		if y >= m.serverListEnd()+2 && y < m.height-1 {
@@ -833,10 +874,11 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 }
 
 // clickServerListRow maps a click at visual row vis (0 = first row of the
-// servers list area, taking the scroll offset into account) onto the row
-// model and applies the row's mouse behaviour. double distinguishes the
-// second click of a double-click pair.
-func (m *Model) clickServerListRow(vis int, double bool) {
+// servers list area, taking the scroll offset into account) and column x
+// onto the row model and applies the row's mouse behaviour. x matters only
+// for the ops row, where it decides between the [NEW] (left) and [EDIT]
+// (right) half. double distinguishes the second click of a double-click pair.
+func (m *Model) clickServerListRow(x, vis int, double bool) {
 	if len(m.srvRows) == 0 {
 		return
 	}
@@ -850,10 +892,15 @@ func (m *Model) clickServerListRow(vis int, double bool) {
 	m.srvCursor = abs
 	r := m.srvRows[abs]
 	switch r.kind {
-	case srvRowNew:
-		m.openServerForm(servers.Entry{Source: "extra"}, false)
-	case srvRowEdit:
-		m.editSelectedServer()
+	case srvRowOps:
+		// Fixed hit zones match the static ops render: segment 1 (marker +
+		// "[NEW]", 7 cells) + one space = columns 0..7, then segment 2.
+		// The ▶ marker of the armed op sits inside each segment.
+		if x < 8 {
+			m.openServerForm(servers.Entry{Source: "extra"}, false)
+		} else {
+			m.editSelectedServer()
+		}
 	case srvRowGroup:
 		m.syncSelectionToRow()
 		if double {
@@ -912,10 +959,15 @@ func (m *Model) openSelectedServer() {
 	m.openEntry(m.serversView[m.serverCursor])
 }
 
-// openEntry connects to one real server row. The built-in localhost never
-// opens a new tab: inside Zellij it moves focus to the pane on the right
-// (the local shell), outside Zellij it only explains itself in the status
-// bar. Every other entry keeps the historical new-tab behaviour.
+// openEntry connects to one real server row (M5). The built-in localhost
+// never types anything: inside Zellij it moves focus to the pane on the
+// right (the local shell), outside Zellij it only explains itself in the
+// status bar. Every other entry — ssh-config hosts and servers.txt entries
+// alike — is used inside the right main terminal pane of the current tab:
+// the TUI types Ctrl+C then the ssh command + Enter there (no new tab, no
+// fullscreen). When a concrete pane id can be resolved the writes target
+// that pane directly (-p); otherwise the plan first moves focus right and
+// writes into the focused pane.
 func (m *Model) openEntry(e servers.Entry) {
 	if e.Source == "builtin" {
 		m.openLocalhost()
@@ -928,11 +980,22 @@ func (m *Model) openEntry(e servers.Entry) {
 		m.status = "password set but sshpass missing — sudo apt install sshpass (or use keys)"
 		return
 	}
+	if len(plan.Steps) == 0 {
+		// Outside Zellij there is no pane layout to steer.
+		m.status = fmt.Sprintf("→ %s: not inside Zellij — start zellij to connect in the right pane", plan.TabName)
+		return
+	}
 	m.ctx = servers.TabName(e)
 	if m.wss != nil {
 		m.wss.SetContext(m.ctx)
 	}
-	m.status = fmt.Sprintf("→ %s  (zellij=%s)", plan.TabName, plan.Detected)
+	// Inside Zellij: try to resolve a concrete pane id so the writes can
+	// target the right main pane without stealing focus from nav4neil.
+	pane := action.ResolveRightPaneID(context.Background())
+	if pane != "" {
+		plan = action.SshWritePlan(e, pane)
+	}
+	m.status = fmt.Sprintf("→ %s  (right pane %s)", plan.TabName, paneDisplay(pane))
 	if err := action.Run(context.Background(), plan); err != nil {
 		m.noteOpenResult(e.Alias, err)
 		m.status = "exec failed: " + err.Error()
@@ -943,10 +1006,18 @@ func (m *Model) openEntry(e servers.Entry) {
 	m.noteOpenResult(e.Alias, nil)
 }
 
-// openLocalhost implements the M4 localhost behaviour: instead of opening a
-// full-screen new tab, focus the right-hand pane (which is the local shell)
-// with `zellij action move-focus right`. Outside Zellij there is no pane
-// layout to steer, so we surface a status-bar hint only.
+// paneDisplay renders the target-pane detail for the status bar.
+func paneDisplay(pane string) string {
+	if pane != "" {
+		return "#" + pane
+	}
+	return "focused"
+}
+
+// openLocalhost implements the M4/M5 localhost behaviour: instead of opening
+// a full-screen new tab, focus the right-hand pane (which is the local
+// shell) with `zellij action move-focus right`. Outside Zellij there is no
+// pane layout to steer, so we surface a status-bar hint only.
 func (m *Model) openLocalhost() {
 	if !action.InZellij() {
 		m.status = "localhost: not inside Zellij — focus the local shell pane manually"
@@ -1048,7 +1119,7 @@ func (m *Model) View() string {
 	switch m.section {
 	case SectionServers:
 		// Single servers mode: product title row, then the focusable row
-		// list (starting with the [NEW]/[EDIT] pseudo rows) filling the
+		// list (starting with the combined [NEW]/[EDIT] ops row) filling the
 		// remaining height above the status.
 		b.WriteString(truncRunes(serversTitle(), m.width))
 		b.WriteByte('\n')
@@ -1156,8 +1227,8 @@ func (m *Model) renderServerRow(i int) string {
 		}
 		r := m.srvRows[abs]
 		switch r.kind {
-		case srvRowNew, srvRowEdit:
-			return m.renderOpsRow(r, abs == m.srvCursor)
+		case srvRowOps:
+			return m.renderOpsRow(abs == m.srvCursor)
 		case srvRowGroup:
 			return m.renderFolderRow(r.group, abs == m.srvCursor)
 		default:
@@ -1170,84 +1241,82 @@ func (m *Model) renderServerRow(i int) string {
 	return m.renderEntryRow(m.serversView[i], false, i == m.serverCursor)
 }
 
-// renderEntryRow renders one server entry. Flat rows and group children share
-// the historical layout — status square + pointer + alias — while children
-// are indented two cells so their names align under the group folder label.
+// renderEntryRow renders one server entry in the M5 column order —
+// pointer (▶/▷ or a blank placeholder) + one space + status square + name —
+// so the coloured square hugs the left edge of the name instead of sitting
+// in front of the pointer. Group children are indented two cells inside the
+// name area so they align under the group folder label. Colour escapes live
+// only in the glyph cell; the padded body is plain text, so column
+// alignment and truncation never see ANSI.
 func (m *Model) renderEntryRow(e servers.Entry, child, focused bool) string {
-	marker := "  "
+	ptr := " "
 	if focused {
 		if m.focus == paneServers {
-			marker = "▶ "
+			ptr = "▶"
 		} else {
-			marker = "▷ "
+			ptr = "▷"
 		}
 	}
 	desc := ""
 	if e.Desc != "" {
 		desc = "  (" + e.Desc + ")"
 	}
-	// M3 status square: one coloured cell + one space, then the existing
-	// pointer and name — "▮ ▶ name…" on the focused row. Colour escapes
-	// live only in the glyph cell; the padded body is plain text, so column
-	// alignment and truncation never see ANSI.
-	avail := m.width - 2
-	if avail < 1 {
-		avail = 1
-	}
 	name := e.Alias
 	if child {
 		name = "  " + name
 	}
-	body := truncRunes(padRunes(marker+name+desc, avail), avail)
-	return svGlyph(m.serverState(e)) + " " + body
-}
-
-// renderOpsRow renders the [NEW]/[EDIT] pseudo rows at the top of the
-// servers list. Both share the pointer column with server rows; the label
-// itself (bracketed, like the historical ops bar) is the focus affordance.
-func (m *Model) renderOpsRow(r srvRow, focused bool) string {
-	marker := "  "
-	if focused {
-		if m.focus == paneServers {
-			marker = "▶ "
-		} else {
-			marker = "▷ "
-		}
-	}
-	label := "[NEW]"
-	if r.kind == srvRowEdit {
-		label = "[EDIT]"
-	}
-	avail := m.width - 2
+	avail := m.width - 3
 	if avail < 1 {
 		avail = 1
 	}
-	body := truncRunes(padRunes(marker+label, avail), avail)
-	return "  " + body
+	body := truncRunes(padRunes(name+desc, avail), avail)
+	return ptr + " " + svGlyph(m.serverState(e)) + body
+}
+
+// renderOpsRow draws the single ops line directly below the title: both
+// [NEW] and [EDIT] sit side by side on the same row (M5: no more wrapping
+// onto two list rows). While the ops row is focused, the armed op
+// (opsSel, toggled with ←/→ or h/l) carries the ▶/▷ pointer; Enter triggers
+// the armed op. Segments keep fixed widths so click hit zones never move.
+func (m *Model) renderOpsRow(focused bool) string {
+	mark := func(armed bool) string {
+		if !focused || !armed {
+			return "  "
+		}
+		if m.focus == paneServers {
+			return "▶ "
+		}
+		return "▷ "
+	}
+	line := mark(m.opsSel == opNew) + "[NEW]" + " " + mark(m.opsSel == opEdit) + "[EDIT]"
+	return truncRunes(padRunes(line, m.width), m.width)
 }
 
 // renderFolderRow renders a group folder: "▾ group/" while expanded,
-// "▸ group/" while collapsed. The folder occupies the glyph slot with two
-// spaces so the pointer column stays aligned with server rows.
+// "▸ group/" while collapsed. Folder rows omit the status square (a single
+// blank cell keeps the square column aligned with server rows); the ▾/▸
+// arrow occupies the same two cells a child entry reserves for its indent,
+// so the group label lines up exactly under the child names.
 func (m *Model) renderFolderRow(group string, focused bool) string {
-	marker := "  "
+	ptr := " "
 	if focused {
 		if m.focus == paneServers {
-			marker = "▶ "
+			ptr = "▶"
 		} else {
-			marker = "▷ "
+			ptr = "▷"
 		}
 	}
 	arrow := "▾ "
 	if m.collapsed[group] {
 		arrow = "▸ "
 	}
-	avail := m.width - 2
+	avail := m.width - 3
 	if avail < 1 {
 		avail = 1
 	}
-	body := truncRunes(padRunes(marker+arrow+group+"/", avail), avail)
-	return "  " + body
+	body := truncRunes(padRunes(arrow+group+"/", avail), avail)
+	// pointer + space + (blank square column) + arrow/group.
+	return ptr + "  " + body
 }
 
 func (m *Model) renderFileRow(i int) string {

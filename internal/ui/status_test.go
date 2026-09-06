@@ -178,22 +178,24 @@ func TestRenderServerRow_StatusSquareLayout(t *testing.T) {
 			{Alias: "web01", Source: "ssh", SshAlias: "web01"},
 		},
 	}
+	// M5 column order: pointer + space + status square + name — the square
+	// hugs the name, not the pointer.
 	row0 := stripANSI(m.renderServerRow(0))
-	if !strings.HasPrefix(row0, "▮ ▶ localhost") {
-		t.Fatalf("focused row must be '▮ ▶ alias…', got %q", row0)
+	if !strings.HasPrefix(row0, "▶ ▮localhost") {
+		t.Fatalf("focused row must be '▶ ▮alias…', got %q", row0)
 	}
 	row1 := stripANSI(m.renderServerRow(1))
-	if !strings.HasPrefix(row1, "▮   web01") {
-		t.Fatalf("unfocused row must keep the alias column aligned, got %q", row1)
+	if !strings.HasPrefix(row1, "  ▮web01") {
+		t.Fatalf("unfocused row must keep the square column aligned, got %q", row1)
 	}
 	if len([]rune(row0)) != m.width || len([]rune(row1)) != m.width {
-		t.Fatalf("rows must stay exactly %d cells wide (got %d / %d)", m.width, len([]rune(row0)), len([]rune(row1)))
+		t.Fatalf("rows must stay exactly %d cells wide after ANSI strip (got %d / %d)", m.width, len([]rune(row0)), len([]rune(row1)))
 	}
 	// Colour mode must not change the visible layout.
 	t.Setenv("TERM", "dumb")
 	dumb := stripANSI(m.renderServerRow(0))
-	if !strings.HasPrefix(dumb, "· ▶ localhost") {
-		t.Fatalf("degraded row must start with dot + pointer, got %q", dumb)
+	if !strings.HasPrefix(dumb, "▶ ·localhost") {
+		t.Fatalf("degraded row must start with pointer + dot, got %q", dumb)
 	}
 }
 
@@ -203,8 +205,8 @@ func TestRenderServerRow_GreenForOpenTab(t *testing.T) {
 	m.width = 30
 	m.serversView = []servers.Entry{{Alias: "web01", Source: "ssh", SshAlias: "web01"}}
 	row := m.renderServerRow(0)
-	if !strings.HasPrefix(stripANSI(row), "▮") {
-		t.Fatalf("row should show a square, got %q", row)
+	if !strings.HasPrefix(stripANSI(row), "▶ ▮web01") {
+		t.Fatalf("row should show the coloured square right after the pointer, got %q", stripANSI(row))
 	}
 }
 

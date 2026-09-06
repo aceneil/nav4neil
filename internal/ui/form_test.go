@@ -53,23 +53,23 @@ func typeKeys(m *Model, s string) {
 }
 
 // TestModel_SectionServersTitleAndOps asserts the single-section servers view
-// starts with the serv4neil title row followed by the [NEW] and [EDIT]
-// pseudo rows of the focusable list.
+// starts with the serv4neil title row followed by ONE ops line carrying both
+// [NEW] and [EDIT] side by side, then the server rows.
 func TestModel_SectionServersTitleAndOps(t *testing.T) {
 	m, _ := newServersModel(t, "db1|root@10.0.0.5:2222|prod db||\n")
 	lines := strings.Split(m.View(), "\n")
 	if strings.TrimSpace(lines[0]) != "serv4neil" {
 		t.Fatalf("row 0 must be the serv4neil title, got %q", lines[0])
 	}
-	if !strings.Contains(lines[1], "[NEW]") {
-		t.Fatalf("row 1 must carry the [NEW] pseudo row, got %q", lines[1])
+	if !strings.Contains(lines[1], "[NEW]") || !strings.Contains(lines[1], "[EDIT]") {
+		t.Fatalf("row 1 must carry [NEW] and [EDIT] on the SAME line, got %q", lines[1])
 	}
-	if !strings.Contains(lines[2], "[EDIT]") {
-		t.Fatalf("row 2 must carry the [EDIT] pseudo row, got %q", lines[2])
+	if strings.Contains(lines[2], "[NEW]") || strings.Contains(lines[2], "[EDIT]") {
+		t.Fatalf("[NEW]/[EDIT] must not wrap onto row 2, got %q", lines[2])
 	}
-	// Server rows shift below the two pseudo rows.
-	if !strings.Contains(strings.Join(lines[3:], "\n"), "db1") {
-		t.Fatalf("server rows must start below the pseudo rows:\n%s", m.View())
+	// Server rows shift below the single ops line.
+	if !strings.Contains(strings.Join(lines[2:], "\n"), "db1") {
+		t.Fatalf("server rows must start below the ops row:\n%s", m.View())
 	}
 }
 
@@ -283,33 +283,39 @@ func TestModel_FormValidationLocalhostAndDuplicates(t *testing.T) {
 }
 
 // TestModel_MouseOpsRowAndListOffset covers the click zones below the title:
-// row 1 = [NEW], row 2 = [EDIT], row 3+ = server entries.
+// the ops line (y=1) is split into a [NEW] half (left) and an [EDIT] half
+// (right); server entries start at y=2.
 func TestModel_MouseOpsRowAndListOffset(t *testing.T) {
 	m, _ := newServersModel(t, "db1|root@10.0.0.5:22|||\n")
+	m.serverCursor = 1 // keep db1 selected for the EDIT click
 	m.lastClickAt = timeZero()
 
-	// Click [NEW] (row 1; the whole row is the hit zone).
+	// Click the [NEW] half of the ops line.
 	m.Update(tea.MouseMsg{Type: tea.MouseLeft, X: 2, Y: 1})
 	if m.form == nil || m.form.mode != formNew {
-		t.Fatalf("click on [NEW] must open the new form: %+v", m.form)
+		t.Fatalf("click on the [NEW] half must open the new form: %+v", m.form)
 	}
 	m.Update(teaKeyMsg("esc"))
 	m.lastClickAt = timeZero()
 
-	// Click [EDIT] (row 2) while db1 is selected.
-	m.serverCursor = 1
-	m.Update(tea.MouseMsg{Type: tea.MouseLeft, X: 10, Y: 2})
+	// Click the [EDIT] half of the ops line while db1 is selected.
+	m.Update(tea.MouseMsg{Type: tea.MouseLeft, X: 10, Y: 1})
 	if m.form == nil || m.form.mode != formEdit || m.form.oldName != "db1" {
-		t.Fatalf("click on [EDIT] must open the edit form: %+v", m.form)
+		t.Fatalf("click on the [EDIT] half must open the edit form: %+v", m.form)
 	}
 	m.Update(teaKeyMsg("esc"))
 	m.lastClickAt = timeZero()
 
-	// Clicking a server row must account for the two pseudo rows: y=3 is row 0.
+	// Clicking a server row: y=2 is list row 0 (localhost).
 	m.serverCursor = 1
+	m.Update(tea.MouseMsg{Type: tea.MouseLeft, X: 3, Y: 2})
+	if m.srvCursor != 1 || m.serversView[m.serverCursor].Alias != "localhost" {
+		t.Fatalf("y=2 must select list row 0: srv=%d sel=%d", m.srvCursor, m.serverCursor)
+	}
+	// y=3 selects db1.
 	m.Update(tea.MouseMsg{Type: tea.MouseLeft, X: 3, Y: 3})
-	if m.serverCursor != 0 {
-		t.Fatalf("y=3 must select list row 0, cursor=%d", m.serverCursor)
+	if m.serversView[m.serverCursor].Alias != "db1" {
+		t.Fatalf("y=3 must select list row 1 (db1): cursor=%d", m.serverCursor)
 	}
 }
 
