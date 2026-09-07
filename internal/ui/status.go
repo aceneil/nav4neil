@@ -163,6 +163,11 @@ func namesOfJSONTabs(tabs []jsonTab) []string {
 //  3. Fallback ledger (not polling / last dump failed): last open success → green.
 //  4. Everything else → yellow.
 func (m *Model) serverState(e servers.Entry) svState {
+	// Built-in rows (localhost / herdr) are always green: they never
+	// participate in the dump-layout polling or the open-attempt ledger.
+	if servers.IsBuiltin(e) {
+		return svGreen
+	}
 	if m.liveTabs && m.tabsOpen[action.Tab(e)] {
 		return svGreen
 	}

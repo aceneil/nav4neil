@@ -212,8 +212,8 @@ func (m *Model) enableForm() {
 		f.err = "Name must not contain | / newline / start with #"
 		return
 	}
-	if strings.EqualFold(name, "localhost") {
-		f.err = "'localhost' is built-in and reserved"
+	if servers.IsReservedAlias(name) {
+		f.err = "'" + name + "' is built-in and reserved (localhost / herdr)"
 		return
 	}
 	port := 22

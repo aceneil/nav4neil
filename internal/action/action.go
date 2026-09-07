@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -67,10 +68,14 @@ func envDetected() string {
 
 // Tab returns the canonical tab-name token for e (used by dump-layout tab
 // polling for the status squares). The built-in localhost resolves to
-// "local"; ssh-config hosts keep their alias; servers.txt entries prefer the
-// part after '@' (root@db1 → db1), sanitized like the historical opener.
+// "local" and the built-in herdr to "herdr"; ssh-config hosts keep their
+// alias; servers.txt entries prefer the part after '@' (root@db1 → db1),
+// sanitized like the historical opener.
 func Tab(e servers.Entry) string {
 	if e.Source == "builtin" {
+		if servers.IsHerdr(e) {
+			return "herdr"
+		}
 		return "local"
 	}
 	tab := sanitizeTab(servers.TabName(e))
@@ -363,6 +368,42 @@ func LocalhostNewPanePlan(shell string) Plan {
 			{"zellij", "action", "move-focus", "right"},
 			np,
 		},
+	}
+}
+
+// HerdrScriptName is the fixed helper name inside ~/.local/bin that pops
+// herdr up as a floating pane over the current Zellij session (it locks
+// Zellij's keybindings while herdr owns the pane and unlocks + closes the
+// floating pane when herdr exits via Ctrl+b q). It ships with the nav
+// bundle; when it is absent the UI shows a status hint instead of running.
+const HerdrScriptName = "wz-herdr.sh"
+
+// HerdrScriptPath returns the absolute path of the herdr launcher script:
+// $HOME/.local/bin/wz-herdr.sh (honouring $HOME so tests can pin it).
+func HerdrScriptPath() string {
+	if h, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(h, ".local", "bin", HerdrScriptName)
+	}
+	return HerdrScriptName
+}
+
+// HerdrFloatingPlan builds the M9 open plan for the built-in herdr row: pop
+// a 96%-sized floating pane named "herdr" over the current Zellij session
+// and run the bundle's wz-herdr.sh inside it (`zellij action new-pane
+// --floating --close-on-exit --name herdr --width 96% --height 96% --x 2%
+// --y 2% -- <script>`). Callers must gate on InZellij() and check that the
+// script exists first; outside Zellij there is no session to float over.
+func HerdrFloatingPlan() Plan {
+	return Plan{
+		UseZellij: true,
+		TabName:   "herdr",
+		SshTarget: "herdr",
+		Detected:  "zellij",
+		Steps: [][]string{{
+			"zellij", "action", "new-pane", "--floating", "--close-on-exit",
+			"--name", "herdr", "--width", "96%", "--height", "96%",
+			"--x", "2%", "--y", "2%", "--", HerdrScriptPath(),
+		}},
 	}
 }
 

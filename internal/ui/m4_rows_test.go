@@ -87,12 +87,12 @@ func rowIndexOfKind(m *Model, k srvRowKind) int {
 // them, Enter triggers the armed op) and mouse clicks hit each half.
 func TestServerList_OpsRowSingleLineAndArmedNavigation(t *testing.T) {
 	m, _ := newServersModel(t, "db1|root@10.0.0.5:22|||\n")
-	// Rows: [ops, localhost, db1]. The initial cursor sits on the first
-	// real server (localhost), matching the historical behaviour.
+	// Rows: [ops, localhost, herdr, db1]. The initial cursor sits on the
+	// first real server (localhost), matching the historical behaviour.
 	if got := m.srvRows[0].kind; got != srvRowOps {
 		t.Fatalf("row 0 must be the ops row, got %v", got)
 	}
-	if len(m.srvRows) != 3 || m.srvRows[1].entry.Alias != "localhost" {
+	if len(m.srvRows) != 4 || m.srvRows[1].entry.Alias != "localhost" || m.srvRows[2].entry.Alias != "herdr" {
 		t.Fatalf("unexpected rows: %+v", m.srvRows)
 	}
 	if m.srvCursor != 1 || m.serversView[m.serverCursor].Alias != "localhost" {
@@ -150,7 +150,7 @@ func TestServerList_OpsRowSingleLineAndArmedNavigation(t *testing.T) {
 
 	// Arm EDIT and Enter edits the last selected server (selection survives
 	// the trip over the ops row: db1 was the selected entry).
-	m.serverCursor = 1 // serversView index of db1
+	m.serverCursor = 2 // serversView index of db1 (0 localhost, 1 herdr)
 	m.syncSelectionToRow()
 	m.srvCursor = 0
 	m.opsSel = opEdit
@@ -235,7 +235,7 @@ func TestServerList_EntryRowColumnOrder(t *testing.T) {
 }
 
 // TestServerList_GroupFoldersRenderFlatFirst checks group rendering:
-// ungrouped servers (localhost first) sit at the top, then one ▾ folder per
+// ungrouped servers (built-ins first) sit at the top, then one ▾ folder per
 // group holds its servers; Group-empty entries stay flat.
 func TestServerList_GroupFoldersRenderFlatFirst(t *testing.T) {
 	seed := "db1|root@10.0.0.5:22|prod db|dc|s3\n" +
@@ -246,7 +246,7 @@ func TestServerList_GroupFoldersRenderFlatFirst(t *testing.T) {
 	v := m.View()
 
 	// Expected row shape (SectionServers):
-	// ops, localhost, local2 | ▾ dc/, db1, app1 | ▾ web/, web1
+	// ops, localhost, herdr, local2 | ▾ dc/, db1, app1 | ▾ web/, web1
 	got := m.srvRows
 	kinds := make([]string, 0, len(got))
 	for _, r := range got {
@@ -259,7 +259,7 @@ func TestServerList_GroupFoldersRenderFlatFirst(t *testing.T) {
 			kinds = append(kinds, r.entry.Alias)
 		}
 	}
-	wantKinds := []string{"OPS", "localhost", "local2", "▾dc", "db1", "app1", "▾web", "web1"}
+	wantKinds := []string{"OPS", "localhost", "herdr", "local2", "▾dc", "db1", "app1", "▾web", "web1"}
 	if strings.Join(kinds, ",") != strings.Join(wantKinds, ",") {
 		t.Fatalf("row order wrong:\n got %v\nwant %v", kinds, wantKinds)
 	}
@@ -280,7 +280,8 @@ func TestServerList_GroupFoldersRenderFlatFirst(t *testing.T) {
 	if !strings.HasPrefix(folder, "   ▾ dc/") {
 		t.Fatalf("folder row must omit the square and align under children: %q", folder)
 	}
-	// Flat entries appear before any folder; localhost is the first entry.
+	// Flat entries appear before any folder; localhost (with herdr right
+	// behind it) is the first entry.
 	if i := strings.Index(v, "localhost"); i < 0 || strings.Index(v, "▾ dc/") < i {
 		t.Fatalf("localhost must render before group folders:\n%s", v)
 	}
@@ -300,7 +301,7 @@ func TestServerList_GroupFolderCollapseExpandAndDoubleClick(t *testing.T) {
 		}
 		return -1
 	}
-	if dcIdx() != 2 { // ops, localhost, then the dc folder
+	if dcIdx() != 3 { // ops, localhost, herdr, then the dc folder
 		t.Fatalf("unexpected dc folder index %d (rows=%v)", dcIdx(), m.srvRows)
 	}
 

@@ -417,6 +417,62 @@ func TestLocalShell_EmptyWithoutBoth(t *testing.T) {
 	}
 }
 
+// ----- herdr (M9 built-in workbench) ----------------------------------------
+
+// fakeHerdrHome creates $HOME/.local/bin/wz-herdr.sh under a temp dir and
+// returns the temp dir with HOME set, so HerdrScriptPath resolves to a real
+// script file exactly like the installed bundle.
+func fakeHerdrHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	scriptDir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptDir, HerdrScriptName), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	return home
+}
+
+func TestHerdrScriptPath_ResolvesUnderLocalBin(t *testing.T) {
+	home := fakeHerdrHome(t)
+	want := filepath.Join(home, ".local", "bin", "wz-herdr.sh")
+	if got := HerdrScriptPath(); got != want {
+		t.Fatalf("HerdrScriptPath() = %q, want %q", got, want)
+	}
+}
+
+// TestHerdrFloatingPlan_Argv pins the exact zellij argv that pops herdr up
+// as a floating pane: --floating --close-on-exit --name herdr, 96% size at
+// 2% offsets, then the bundle script after `--`.
+func TestHerdrFloatingPlan_Argv(t *testing.T) {
+	home := fakeHerdrHome(t)
+	script := filepath.Join(home, ".local", "bin", "wz-herdr.sh")
+	p := HerdrFloatingPlan()
+	if !p.UseZellij || p.Detected != "zellij" {
+		t.Fatalf("metadata wrong: %+v", p)
+	}
+	if p.TabName != "herdr" || p.SshTarget != "herdr" {
+		t.Fatalf("metadata wrong: %+v", p)
+	}
+	want := [][]string{{
+		"zellij", "action", "new-pane", "--floating", "--close-on-exit",
+		"--name", "herdr", "--width", "96%", "--height", "96%",
+		"--x", "2%", "--y", "2%", "--", script,
+	}}
+	if !reflect.DeepEqual(p.Steps, want) {
+		t.Fatalf("Steps = %#v\nwant %#v", p.Steps, want)
+	}
+	for _, s := range p.Steps {
+		joined := strings.Join(s, " ")
+		if strings.Contains(joined, "new-tab") || strings.Contains(joined, "write") || strings.Contains(joined, "move-focus") {
+			t.Fatalf("herdr open must be one new-pane --floating step only: %v", s)
+		}
+	}
+}
+
 // ----- tab names -------------------------------------------------------------
 
 func TestTab_CanonicalNames(t *testing.T) {
@@ -426,6 +482,7 @@ func TestTab_CanonicalNames(t *testing.T) {
 		want string
 	}{
 		{"builtin localhost → local", servers.Entry{Alias: "localhost", Source: "builtin"}, "local"},
+		{"builtin herdr → herdr", servers.Entry{Alias: "herdr", Source: "builtin"}, "herdr"},
 		{"ssh alias kept", servers.Entry{Alias: "web01", Source: "ssh", SshAlias: "web01"}, "web01"},
 		{"extra root@db1 → db1", servers.Entry{Alias: "root@db1", Source: "extra", SshAlias: "root@db1"}, "db1"},
 		{"extra plain alias kept", servers.Entry{Alias: "jumpbox", Source: "extra", SshAlias: "jumpbox"}, "jumpbox"},

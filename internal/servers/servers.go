@@ -265,7 +265,7 @@ func SaveExtras(entries []Entry) error {
 
 // Load returns the merged server list (ssh + extra), in order, with
 // duplicates removed (ssh entries win, first appearance kept) and the
-// built-in localhost kept at the front.
+// built-in rows (localhost, then herdr) kept at the front.
 func Load() []Entry {
 	return LoadFrom(SSHConfigPath(), ExtraListPath())
 }
@@ -303,9 +303,10 @@ func LoadFrom(sshPath, extraPath string) []Entry {
 			extras, _ := ParseExtraList(f)
 			_ = f.Close()
 			for _, e := range extras {
-				// "localhost" is reserved for the built-in entry: a user row
-				// may never shadow or duplicate it, regardless of case.
-				if strings.EqualFold(e.Alias, "localhost") {
+				// "localhost" and "herdr" are reserved for the built-in
+				// rows: a user row may never shadow or duplicate either,
+				// regardless of case.
+				if IsReservedAlias(e.Alias) {
 					continue
 				}
 				if seen[e.Alias] {
@@ -365,15 +366,54 @@ func Validate(entries []Entry) error {
 	return nil
 }
 
-// InjectBuiltin prepends the built-in localhost entry unless an existing
-// entry already uses that alias (notably an explicit SSH Host localhost).
-func InjectBuiltin(entries []Entry) []Entry {
-	for _, e := range entries {
-		if strings.EqualFold(e.Alias, "localhost") {
-			return entries
+// builtinRows are the reserved built-in rows injected at the front of the
+// merged list, in display order: the local machine first, then the herdr
+// agent workbench. Both are Source "builtin" — read-only, always-green rows
+// that are never written to servers.txt and never enter a group folder.
+var builtinRows = []Entry{
+	{Alias: "localhost", Desc: "本机", Source: "builtin"},
+	{Alias: "herdr", Desc: "Agent 工作台", Source: "builtin"},
+}
+
+// IsBuiltin reports whether e is one of the reserved built-in rows
+// (localhost / herdr). An ssh-config row that reuses the alias is not
+// builtin — it keeps its ssh source and the historical override rule.
+func IsBuiltin(e Entry) bool { return e.Source == "builtin" }
+
+// IsHerdr reports whether e is the built-in herdr agent-workbench row.
+func IsHerdr(e Entry) bool {
+	return IsBuiltin(e) && strings.EqualFold(e.Alias, "herdr")
+}
+
+// IsReservedAlias reports whether name (case-insensitive) collides with a
+// built-in alias and therefore may never be used by a user-managed row.
+func IsReservedAlias(name string) bool {
+	for _, b := range builtinRows {
+		if strings.EqualFold(b.Alias, name) {
+			return true
 		}
 	}
-	out := make([]Entry, 0, len(entries)+1)
-	out = append(out, Entry{Alias: "localhost", Desc: "本机", Source: "builtin"})
+	return false
+}
+
+// InjectBuiltin prepends the built-in rows (localhost, then herdr) unless
+// an existing entry already uses that alias — notably an explicit SSH
+// "Host localhost" / "Host herdr", which keeps its ssh source and position
+// exactly as before. The result keeps the historical guarantee for every
+// builtin: reserved names are never duplicated, and in the common case
+// localhost is the very first row with herdr right behind it.
+func InjectBuiltin(entries []Entry) []Entry {
+	taken := map[string]bool{}
+	for _, e := range entries {
+		if IsReservedAlias(e.Alias) {
+			taken[strings.ToLower(e.Alias)] = true
+		}
+	}
+	out := make([]Entry, 0, len(entries)+len(builtinRows))
+	for _, b := range builtinRows {
+		if !taken[b.Alias] {
+			out = append(out, b)
+		}
+	}
 	return append(out, entries...)
 }

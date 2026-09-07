@@ -107,6 +107,7 @@ func TestServerState_StateMachine(t *testing.T) {
 	web := servers.Entry{Alias: "web01", Source: "ssh", SshAlias: "web01"}
 	db := servers.Entry{Alias: "root@db1", Source: "extra", SshAlias: "root@db1"}
 	local := servers.Entry{Alias: "localhost", Source: "builtin"}
+	herdr := servers.Entry{Alias: "herdr", Source: "builtin", Desc: "Agent 工作台"}
 
 	cases := []struct {
 		name string
@@ -125,6 +126,12 @@ func TestServerState_StateMachine(t *testing.T) {
 		{"fallback last open ok → green", mkStatusModel(false, nil, []string{"web01"}, nil), web, svGreen},
 		{"live mode ignores stale ledger success", mkStatusModel(true, []string{"other"}, []string{"web01"}, nil), web, svYellow},
 		{"multi-server: green + yellow together", mkStatusModel(true, []string{"web01"}, nil, nil), db, svYellow},
+		// M9: built-ins never poll the layout and never read the ledger —
+		// both stay green even when nothing is open or the ledger says red.
+		{"builtin localhost always green (no tabs)", mkStatusModel(false, nil, nil, nil), local, svGreen},
+		{"builtin localhost green despite ledger failure", mkStatusModel(true, []string{"other"}, nil, []string{"localhost"}), local, svGreen},
+		{"builtin herdr always green (no tabs)", mkStatusModel(false, nil, nil, nil), herdr, svGreen},
+		{"builtin herdr green despite ledger failure", mkStatusModel(true, []string{"other"}, nil, []string{"herdr"}), herdr, svGreen},
 	}
 	for _, c := range cases {
 		if got := c.m.serverState(c.e); got != c.want {

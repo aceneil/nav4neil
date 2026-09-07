@@ -594,13 +594,15 @@ func (m *Model) editCurrentRow() {
 }
 
 // editEntry opens the EDIT overlay for one real entry, guarding the
-// read-only rows (builtin localhost and ssh-config hosts get hints instead).
+// read-only rows: the built-in localhost/herdr entries and ssh-config hosts
+// get a status hint instead of a form, so built-ins can never be changed or
+// removed through the UI.
 func (m *Model) editEntry(e servers.Entry) {
-	switch e.Source {
-	case "builtin":
-		m.status = "localhost is built-in and fixed; use [NEW] to add another server"
+	switch {
+	case servers.IsBuiltin(e):
+		m.status = "内置项不可编辑：localhost/herdr 为内置项，用 [NEW] 添加新服务器"
 		return
-	case "ssh":
+	case e.Source == "ssh":
 		m.status = "ssh config hosts are not in servers.txt; use [NEW] to add a copy"
 		return
 	}
@@ -635,7 +637,7 @@ func (m *Model) moveSrvCursor(d int) {
 }
 
 // jumpSrvFirstEntry sends the cursor to the first real server row, skipping
-// the ops row (localhost is the very first entry).
+// the ops row (localhost is the very first entry, herdr right behind it).
 func (m *Model) jumpSrvFirstEntry() {
 	for i, r := range m.srvRows {
 		if r.kind == srvRowEntry {
@@ -826,9 +828,10 @@ func (m *Model) rebuildServerView() {
 //     triggers);
 //   - an active filter flattens every match (groups are skipped so a partial
 //     match list stays navigable);
-//   - otherwise ungrouped entries are listed first (localhost stays the very
-//     first row), followed by one ▾/▸ folder per group — in first-appearance
-//     order — whose children appear only while the folder is expanded.
+//   - otherwise ungrouped entries are listed first (the built-ins
+//     localhost → herdr sit at the very front), followed by one ▾/▸ folder
+//     per group — in first-appearance order — whose children appear only
+//     while the folder is expanded.
 //
 // The display cursor is restored by row identity, falling back to the
 // current selection and finally to the first entry row.
@@ -1114,10 +1117,14 @@ func (m *Model) openSelectedServer() tea.Cmd {
 //     polling the tab list.
 //
 // The built-in localhost never opens an ssh session — openLocalhost handles
-// it. A stored password without sshpass on PATH turns into a status hint in
+// it, and the built-in herdr row opens its own floating pane via openHerdr.
+// A stored password without sshpass on PATH turns into a status hint in
 // both modes instead of a launch.
 func (m *Model) openEntry(e servers.Entry) tea.Cmd {
 	if e.Source == "builtin" {
+		if servers.IsHerdr(e) {
+			return m.openHerdr()
+		}
 		return m.openLocalhost()
 	}
 	if m.standalone() {
@@ -1201,6 +1208,39 @@ func (m *Model) openLocalhost() tea.Cmd {
 		return nil
 	}
 	m.noteOpenResult("localhost", nil)
+	return nil
+}
+
+// openHerdr handles the built-in herdr row (M9). In every launch mode —
+// sidebar (--section servers|files) and standalone (SectionBoth) — the open
+// is the same: pop a floating pane named "herdr" running the bundle's
+// ~/.local/bin/wz-herdr.sh over the current Zellij session, then keep the
+// nav pane alive. herdr is never exec'd into the current pane, so unlike
+// every other standalone row this never requests tea.Quit. Outside Zellij,
+// or when the helper script is missing, it degrades to a status hint.
+func (m *Model) openHerdr() tea.Cmd {
+	if !action.InZellij() {
+		m.status = "herdr: not inside Zellij — start zellij to open the agent workbench"
+		return nil
+	}
+	script := action.HerdrScriptPath()
+	if _, err := os.Stat(script); err != nil {
+		m.status = "herdr: missing " + script + " (reinstall the nav bundle)"
+		return nil
+	}
+	m.ctx = "herdr"
+	if m.wss != nil {
+		m.wss.SetContext(m.ctx)
+	}
+	m.status = "→ herdr (floating pane)"
+	if err := action.Run(context.Background(), action.HerdrFloatingPlan()); err != nil {
+		m.noteOpenResult("herdr", err)
+		m.status = "exec failed: " + err.Error()
+		return nil
+	}
+	// herdr's square is always green regardless of the ledger; the record
+	// only exists so a failed open attempt stays visible in the maps.
+	m.noteOpenResult("herdr", nil)
 	return nil
 }
 

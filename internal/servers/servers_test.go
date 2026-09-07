@@ -111,15 +111,29 @@ func TestValidate_Empty(t *testing.T) {
 	}
 }
 
-func TestInjectBuiltin_LocalhostAndDedup(t *testing.T) {
+func TestInjectBuiltin_RowsAndDedup(t *testing.T) {
 	got := InjectBuiltin([]Entry{{Alias: "prod", Source: "ssh"}})
-	if len(got) != 2 || got[0].Alias != "localhost" || got[0].Desc != "本机" || got[0].Source != "builtin" {
+	if len(got) != 3 || got[0].Alias != "localhost" || got[0].Desc != "本机" || got[0].Source != "builtin" {
 		t.Fatalf("unexpected injection: %+v", got)
 	}
+	if got[1].Alias != "herdr" || got[1].Desc != "Agent 工作台" || got[1].Source != "builtin" || got[1].Group != "" {
+		t.Fatalf("herdr must be the second built-in row, ungrouped: %+v", got[1])
+	}
+	if got[2].Alias != "prod" {
+		t.Fatalf("user row must follow the built-ins: %+v", got)
+	}
+	// An ssh alias that owns "localhost" keeps its ssh source; the reserved
+	// localhost row is skipped but herdr is still injected.
 	kept := []Entry{{Alias: "LOCALHOST", Source: "ssh"}}
 	got = InjectBuiltin(kept)
-	if len(got) != 1 || got[0].Source != "ssh" {
-		t.Fatalf("localhost should be deduplicated: %+v", got)
+	if len(got) != 2 || got[0].Alias != "herdr" || got[0].Source != "builtin" || got[1].Source != "ssh" {
+		t.Fatalf("ssh localhost must stay and herdr must be injected: %+v", got)
+	}
+	// An ssh alias that owns "herdr" skips the built-in herdr row too.
+	kept2 := []Entry{{Alias: "herdr", Source: "ssh"}}
+	got = InjectBuiltin(kept2)
+	if len(got) != 2 || got[0].Alias != "localhost" || got[0].Source != "builtin" || got[1].Alias != "herdr" || got[1].Source != "ssh" {
+		t.Fatalf("ssh herdr must stay: %+v", got)
 	}
 }
 
@@ -251,7 +265,8 @@ func TestSaveExtrasTo_LoadFromRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := LoadFrom("", extraFile)
-	if len(got) != 2 || got[0].Alias != "localhost" || got[1].Alias != "oldbox" {
+	if len(got) != 3 || got[0].Alias != "localhost" || got[0].Source != "builtin" ||
+		got[1].Alias != "herdr" || got[1].Source != "builtin" || got[2].Alias != "oldbox" {
 		t.Fatalf("seed load wrong: %+v", got)
 	}
 
@@ -265,11 +280,12 @@ func TestSaveExtrasTo_LoadFromRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	loaded := LoadFrom(sshFile, extraFile)
-	// builtin stays first; no legacy leftovers.
-	if len(loaded) != 3 || loaded[0].Alias != "localhost" || loaded[0].Source != "builtin" {
+	// builtins stay first (localhost → herdr); no legacy leftovers.
+	if len(loaded) != 4 || loaded[0].Alias != "localhost" || loaded[0].Source != "builtin" ||
+		loaded[1].Alias != "herdr" || loaded[1].Source != "builtin" {
 		t.Fatalf("post-save load wrong: %+v", loaded)
 	}
-	if loaded[1].Host != "oldbox.example.com" || loaded[2].Port != 2222 || loaded[2].Password != "pw" {
+	if loaded[2].Host != "oldbox.example.com" || loaded[3].Port != 2222 || loaded[3].Password != "pw" {
 		t.Fatalf("structured rows wrong: %+v", loaded)
 	}
 
@@ -298,13 +314,79 @@ func TestLoadFrom_ReservesLocalhost(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := LoadFrom("", extraFile)
-	if len(got) != 2 || got[0].Alias != "localhost" || got[0].Source != "builtin" {
+	if len(got) != 3 || got[0].Alias != "localhost" || got[0].Source != "builtin" {
 		t.Fatalf("builtin missing/first wrong: %+v", got)
+	}
+	if got[1].Alias != "herdr" || got[1].Source != "builtin" {
+		t.Fatalf("herdr must be the second builtin: %+v", got)
 	}
 	for _, e := range got[1:] {
 		if strings.EqualFold(e.Alias, "localhost") {
 			t.Fatalf("user localhost row must be dropped: %+v", got)
 		}
+	}
+}
+
+func TestLoadFrom_ReservesHerdr(t *testing.T) {
+	dir := t.TempDir()
+	extraFile := filepath.Join(dir, "servers.txt")
+	content := "# user tried to take the agent-workbench name\n" +
+		"HERDR|root@x:22|dup||\n" +
+		"web|root@w:22|ok||\n"
+	if err := os.WriteFile(extraFile, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := LoadFrom("", extraFile)
+	// localhost + herdr builtins, then the surviving extra row.
+	if len(got) != 3 || got[0].Alias != "localhost" || got[1].Alias != "herdr" || got[1].Source != "builtin" {
+		t.Fatalf("unexpected list: %+v", got)
+	}
+	for _, e := range got {
+		if e.Source == "extra" && strings.EqualFold(e.Alias, "herdr") {
+			t.Fatalf("user herdr row must be dropped: %+v", got)
+		}
+	}
+}
+
+// TestLoadFrom_BuiltinsOnly verifies the two built-in rows exist even when
+// both data sources are empty: localhost first, herdr second, both with
+// Source builtin and no group.
+func TestLoadFrom_BuiltinsOnly(t *testing.T) {
+	got := LoadFrom("", "")
+	if len(got) != 2 {
+		t.Fatalf("expected exactly the two built-ins, got %+v", got)
+	}
+	if got[0].Alias != "localhost" || got[1].Alias != "herdr" {
+		t.Fatalf("built-in order must be localhost → herdr: %+v", got)
+	}
+	for _, e := range got {
+		if e.Source != "builtin" || e.Group != "" {
+			t.Fatalf("built-in row must be ungrouped Source builtin: %+v", e)
+		}
+	}
+}
+
+// TestIsReservedAlias covers the case-insensitive guard used by LoadFrom and
+// the NEW/EDIT form.
+func TestIsReservedAlias(t *testing.T) {
+	for _, a := range []string{"localhost", "LOCALHOST", "herdr", "Herdr"} {
+		if !IsReservedAlias(a) {
+			t.Fatalf("IsReservedAlias(%q) must be true", a)
+		}
+	}
+	for _, a := range []string{"", "web", "local", "herdr1", "local-host"} {
+		if IsReservedAlias(a) {
+			t.Fatalf("IsReservedAlias(%q) must be false", a)
+		}
+	}
+	if !IsHerdr(Entry{Alias: "herdr", Source: "builtin"}) {
+		t.Fatalf("IsHerdr must accept the built-in herdr row")
+	}
+	if IsHerdr(Entry{Alias: "herdr", Source: "ssh"}) || IsHerdr(Entry{Alias: "localhost", Source: "builtin"}) {
+		t.Fatalf("IsHerdr must reject ssh herdr and builtin localhost")
+	}
+	if !IsBuiltin(Entry{Alias: "localhost", Source: "builtin"}) || IsBuiltin(Entry{Alias: "localhost", Source: "ssh"}) {
+		t.Fatalf("IsBuiltin must key on Source only")
 	}
 }
 

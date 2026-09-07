@@ -135,7 +135,7 @@ func TestModel_FormTypingAndTabCycle(t *testing.T) {
 }
 
 // TestModel_NewServerSaveRefresh verifies the full NEW → enable path: file
-// written in the M2 format, list reloaded with the builtin localhost first.
+// written in the M2 format, list reloaded with the built-ins first.
 func TestModel_NewServerSaveRefresh(t *testing.T) {
 	m, extraFile := newServersModel(t, "")
 	m.Update(teaKeyMsg("n"))
@@ -156,8 +156,9 @@ func TestModel_NewServerSaveRefresh(t *testing.T) {
 	if raw != want {
 		t.Fatalf("servers.txt = %q want %q", raw, want)
 	}
-	if len(m.serversAll) != 2 || m.serversAll[0].Alias != "localhost" || m.serversAll[0].Source != "builtin" {
-		t.Fatalf("list must be builtin-localhost first plus new row: %+v", m.serversAll)
+	if len(m.serversAll) != 3 || m.serversAll[0].Alias != "localhost" || m.serversAll[0].Source != "builtin" ||
+		m.serversAll[1].Alias != "herdr" || m.serversAll[1].Source != "builtin" {
+		t.Fatalf("list must be the built-ins first plus the new row: %+v", m.serversAll)
 	}
 	found := false
 	for _, e := range m.serversAll {
@@ -184,8 +185,9 @@ func TestModel_NewServerSaveRefresh(t *testing.T) {
 func TestModel_EditPrefillRenameAndPersist(t *testing.T) {
 	seed := "db1|root@10.0.0.5:2222|prod db|dc|s3cr3t\n"
 	m, extraFile := newServersModel(t, seed)
-	// Rows: ops, localhost, db1. Press e → edit mode, cursor jumps to the
-	// first server (localhost, row 1); j moves onto db1; Enter opens EDIT.
+	// Rows: ops, localhost, herdr, ▾dc, db1 (grouped). Press e → edit mode,
+	// cursor jumps to the first server (localhost, row 1); three j presses
+	// walk past herdr and the dc folder onto db1; Enter opens EDIT.
 	m.Update(teaKeyMsg("e"))
 	if !m.editMode {
 		t.Fatalf("e must enter edit mode, status=%q", m.status)
@@ -193,8 +195,7 @@ func TestModel_EditPrefillRenameAndPersist(t *testing.T) {
 	if m.srvCursor != 1 || m.srvRows[m.srvCursor].entry.Alias != "localhost" {
 		t.Fatalf("entering edit mode must land the cursor on the first server: row=%d %+v", m.srvCursor, m.srvRows[m.srvCursor])
 	}
-	// Rows: ops, localhost, ▾dc folder, db1 (grouped) → two j presses reach
-	// the db1 child; Enter opens its EDIT form.
+	m.Update(teaKeyMsg("j"))
 	m.Update(teaKeyMsg("j"))
 	m.Update(teaKeyMsg("j"))
 	m.Update(teaKeyMsg("enter"))
@@ -224,14 +225,15 @@ func TestModel_EditPrefillRenameAndPersist(t *testing.T) {
 	if raw != want {
 		t.Fatalf("servers.txt = %q want %q", raw, want)
 	}
-	if len(m.serversAll) != 2 || m.serversAll[0].Alias != "localhost" {
+	if len(m.serversAll) != 3 || m.serversAll[0].Alias != "localhost" ||
+		m.serversAll[1].Alias != "herdr" || m.serversAll[1].Source != "builtin" {
 		t.Fatalf("reload wrong: %+v", m.serversAll)
 	}
-	if m.serversAll[1].Alias != "db1-prod" {
+	if m.serversAll[2].Alias != "db1-prod" {
 		t.Fatalf("old row must be gone, new name present: %+v", m.serversAll)
 	}
-	if m.serversAll[1].Desc != "prod db" || m.serversAll[1].Password != "s3cr3t" {
-		t.Fatalf("unchanged fields must survive the rename: %+v", m.serversAll[1])
+	if m.serversAll[2].Desc != "prod db" || m.serversAll[2].Password != "s3cr3t" {
+		t.Fatalf("unchanged fields must survive the rename: %+v", m.serversAll[2])
 	}
 }
 
@@ -240,17 +242,24 @@ func TestModel_EditPrefillRenameAndPersist(t *testing.T) {
 // ssh-config host) shows a hint and never opens a form.
 func TestModel_EditRejectsBuiltinAndSSH(t *testing.T) {
 	m, _ := newServersModel(t, "extra1|root@h:22|||\n")
-	// Row 0 = ops, row 1 = builtin localhost. Enter edit mode (cursor jumps
-	// to localhost) and press Enter on it.
+	// Row 0 = ops, row 1 = builtin localhost, row 2 = builtin herdr. Enter
+	// edit mode (cursor jumps to localhost) and press Enter on it.
 	m.Update(teaKeyMsg("e"))
 	m.Update(teaKeyMsg("enter"))
-	if m.form != nil || !strings.Contains(m.status, "built-in") {
+	if m.form != nil || !strings.Contains(m.status, "内置项不可编辑") {
 		t.Fatalf("builtin edit must be rejected: form=%v status=%q", m.form, m.status)
+	}
+	// The built-in herdr row is guarded the same way.
+	m.Update(teaKeyMsg("j")) // localhost → herdr
+	m.Update(teaKeyMsg("enter"))
+	if m.form != nil || !strings.Contains(m.status, "内置项不可编辑") {
+		t.Fatalf("herdr edit must be rejected: form=%v status=%q", m.form, m.status)
 	}
 	// An ssh-config host must also be rejected.
 	m.Update(teaKeyMsg("esc")) // leave edit mode
 	m.serversAll = []servers.Entry{
 		{Alias: "localhost", Source: "builtin"},
+		{Alias: "herdr", Source: "builtin"},
 		{Alias: "github.com", Source: "ssh", SshAlias: "github.com"},
 	}
 	m.rebuildServerView()
@@ -258,7 +267,8 @@ func TestModel_EditRejectsBuiltinAndSSH(t *testing.T) {
 	if !m.editMode {
 		t.Fatalf("e must re-enter edit mode")
 	}
-	m.Update(teaKeyMsg("j")) // localhost → github.com
+	m.Update(teaKeyMsg("j")) // localhost → herdr
+	m.Update(teaKeyMsg("j")) // herdr → github.com
 	m.Update(teaKeyMsg("enter"))
 	if m.form != nil || !strings.Contains(m.status, "ssh config") {
 		t.Fatalf("ssh edit must be rejected: form=%v status=%q", m.form, m.status)
@@ -278,7 +288,7 @@ func TestModel_FormValidationLocalhostAndDuplicates(t *testing.T) {
 	}
 	// Duplicate of an existing extra row.
 	m.form = nil
-	m.serverCursor = 1 // box
+	m.serverCursor = 2 // box (0 localhost, 1 herdr builtins precede it)
 	m.openServerForm(m.serversView[m.serverCursor], true)
 	m.form.values[fieldName] = "dupe"
 	m.form.values[fieldHost] = "10.0.0.9"
@@ -333,10 +343,10 @@ func TestModel_MouseOpsRowAndListOffset(t *testing.T) {
 	if m.srvCursor != 1 || m.serversView[m.serverCursor].Alias != "localhost" {
 		t.Fatalf("y=2 must select list row 0: srv=%d sel=%d", m.srvCursor, m.serverCursor)
 	}
-	// y=3 selects db1.
-	m.Update(tea.MouseMsg{Type: tea.MouseLeft, X: 3, Y: 3})
+	// y=3 is the built-in herdr row; y=4 selects db1.
+	m.Update(tea.MouseMsg{Type: tea.MouseLeft, X: 3, Y: 4})
 	if m.serversView[m.serverCursor].Alias != "db1" {
-		t.Fatalf("y=3 must select list row 1 (db1): cursor=%d", m.serverCursor)
+		t.Fatalf("y=4 must select list row 2 (db1): cursor=%d", m.serverCursor)
 	}
 }
 
@@ -376,10 +386,10 @@ func TestModel_OpenSelectedServerWithPasswordMissingSshpass(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv("ZELLIJ", "")
 	m, _ := newServersModel(t, "db1|root@10.0.0.5:22|pw server||s3cr3t\n")
-	if len(m.serversView) < 2 || m.serversView[1].Alias != "db1" {
+	if len(m.serversView) < 3 || m.serversView[2].Alias != "db1" {
 		t.Fatalf("unexpected view: %+v", m.serversView)
 	}
-	m.serverCursor = 1
+	m.serverCursor = 2
 	m.openSelectedServer()
 	if !strings.Contains(m.status, "sshpass") {
 		t.Fatalf("status must hint at sshpass, got %q", m.status)

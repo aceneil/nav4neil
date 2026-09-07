@@ -133,7 +133,8 @@ func TestEditMode_GreenCursorAndColorAbstraction(t *testing.T) {
 func TestEditMode_RightAndEnterOnServerOpenEditForm(t *testing.T) {
 	m, _ := newServersModel(t, "db1|root@10.0.0.5:2222|prod||\n")
 	m.Update(teaKeyMsg("e")) // cursor row 1 (localhost)
-	m.Update(teaKeyMsg("j")) // row 2 (db1)
+	m.Update(teaKeyMsg("j")) // row 2 (built-in herdr)
+	m.Update(teaKeyMsg("j")) // row 3 (db1)
 	m.Update(teaKeyMsg("right"))
 	if m.form == nil || m.form.mode != formEdit || m.form.oldName != "db1" {
 		t.Fatalf("right in edit mode must open the EDIT form for db1: %+v", m.form)
@@ -160,11 +161,12 @@ func TestEditMode_FolderEnterTogglesRightRenames(t *testing.T) {
 	seed := "db1|root@10.0.0.5:22||dc|\napp1|root@10.0.0.6:22||dc|\n"
 	m, extraFile := newServersModel(t, seed)
 	dc := m.findRowIdentity(rowIdentity{kind: srvRowGroup, key: "dc"})
-	if dc != 2 { // ops, localhost, ▾dc
+	if dc != 3 { // ops, localhost, herdr, ▾dc
 		t.Fatalf("unexpected dc folder index %d", dc)
 	}
 	m.Update(teaKeyMsg("e")) // cursor on localhost row 1
-	m.Update(teaKeyMsg("j")) // onto ▾dc (row 2)
+	m.Update(teaKeyMsg("j")) // past herdr onto ▾dc (row 3)
+	m.Update(teaKeyMsg("j"))
 
 	// Enter toggles the folder.
 	m.Update(teaKeyMsg("enter"))
@@ -200,7 +202,8 @@ func TestGroupForm_RenameUpdatesEveryServerInFolder(t *testing.T) {
 	seed := "db1|root@10.0.0.5:22|prod|dc|\napp1|root@10.0.0.6:22||dc|\nweb1|root@10.0.0.7:22||web|\n"
 	m, extraFile := newServersModel(t, seed)
 	m.Update(teaKeyMsg("e"))
-	m.Update(teaKeyMsg("j")) // onto ▾dc
+	m.Update(teaKeyMsg("j")) // localhost → herdr
+	m.Update(teaKeyMsg("j")) // herdr → onto ▾dc
 	m.Update(teaKeyMsg("right"))
 	if m.gform == nil || m.gform.value != "dc" {
 		t.Fatalf("expected rename overlay prefilled dc: %+v", m.gform)
@@ -240,7 +243,8 @@ func TestGroupForm_EmptyLabelUngroupsMembers(t *testing.T) {
 	seed := "db1|root@10.0.0.5:22|prod|dc|\napp1|root@10.0.0.6:22||dc|\n"
 	m, extraFile := newServersModel(t, seed)
 	m.Update(teaKeyMsg("e"))
-	m.Update(teaKeyMsg("j")) // onto ▾dc
+	m.Update(teaKeyMsg("j")) // localhost → herdr
+	m.Update(teaKeyMsg("j")) // herdr → onto ▾dc
 	m.Update(teaKeyMsg("l"))
 	if m.gform == nil {
 		t.Fatalf("l on a folder in edit mode must open the rename overlay")
@@ -267,7 +271,8 @@ func TestGroupForm_CollapseStateTransfersOnRename(t *testing.T) {
 	m, _ := newServersModel(t, seed)
 	// Collapse dc through edit-mode Enter.
 	m.Update(teaKeyMsg("e"))
-	m.Update(teaKeyMsg("j"))
+	m.Update(teaKeyMsg("j")) // localhost → herdr
+	m.Update(teaKeyMsg("j")) // herdr → onto ▾dc
 	m.Update(teaKeyMsg("enter"))
 	if !m.collapsed["dc"] {
 		t.Fatalf("folder must be collapsed")
@@ -294,7 +299,8 @@ func TestGroupForm_InvalidLabelRejectedEscNoWrite(t *testing.T) {
 	seed := "db1|root@10.0.0.5:22||dc|\n"
 	m, extraFile := newServersModel(t, seed)
 	m.Update(teaKeyMsg("e"))
-	m.Update(teaKeyMsg("j"))
+	m.Update(teaKeyMsg("j")) // localhost → herdr
+	m.Update(teaKeyMsg("j")) // herdr → onto ▾dc
 	m.Update(teaKeyMsg("right"))
 	m.gform.value = "a|b"
 	m.Update(teaKeyMsg("enter"))
@@ -316,7 +322,8 @@ func TestGroupForm_SameNameClosesWithoutWrite(t *testing.T) {
 	seed := "db1|root@10.0.0.5:22||dc|\n"
 	m, extraFile := newServersModel(t, seed)
 	m.Update(teaKeyMsg("e"))
-	m.Update(teaKeyMsg("j"))
+	m.Update(teaKeyMsg("j")) // localhost → herdr
+	m.Update(teaKeyMsg("j")) // herdr → onto ▾dc
 	m.Update(teaKeyMsg("right"))
 	m.Update(teaKeyMsg("enter")) // value still "dc"
 	if m.gform != nil {
@@ -333,7 +340,8 @@ func TestGroupForm_KeyboardTypingAndFocusRing(t *testing.T) {
 	seed := "db1|root@10.0.0.5:22||dc|\n"
 	m, extraFile := newServersModel(t, seed)
 	m.Update(teaKeyMsg("e"))
-	m.Update(teaKeyMsg("j"))
+	m.Update(teaKeyMsg("j")) // localhost → herdr
+	m.Update(teaKeyMsg("j")) // herdr → onto ▾dc
 	m.Update(teaKeyMsg("right"))
 	// Prefill is "dc": backspace twice, then type the new name.
 	m.Update(teaKeyMsg("backspace"))
@@ -361,10 +369,10 @@ func TestGroupForm_KeyboardTypingAndFocusRing(t *testing.T) {
 func TestEditMode_DoubleClickServerEditsInsteadOfConnecting(t *testing.T) {
 	t.Setenv("ZELLIJ", "")
 	m, _ := newServersModel(t, "db1|root@10.0.0.5:22|||\n")
-	// Screen rows: title 0, ops 1, localhost 2, db1 3.
+	// Screen rows: title 0, ops 1, localhost 2, herdr 3, db1 4.
 	m.lastClickAt = timeZero()
-	m.Update(tea.MouseMsg{Type: tea.MouseLeft, X: 3, Y: 3})
-	m.Update(tea.MouseMsg{Type: tea.MouseLeft, X: 3, Y: 3}) // double-click on db1
+	m.Update(tea.MouseMsg{Type: tea.MouseLeft, X: 3, Y: 4})
+	m.Update(tea.MouseMsg{Type: tea.MouseLeft, X: 3, Y: 4}) // double-click on db1
 	if m.form != nil {
 		t.Fatalf("normal-mode double-click must open a connection, not a form")
 	}
@@ -374,8 +382,8 @@ func TestEditMode_DoubleClickServerEditsInsteadOfConnecting(t *testing.T) {
 
 	m.lastClickAt = timeZero()
 	m.Update(teaKeyMsg("e")) // enter edit mode (cursor row 1 = localhost)
-	m.Update(tea.MouseMsg{Type: tea.MouseLeft, X: 3, Y: 3})
-	m.Update(tea.MouseMsg{Type: tea.MouseLeft, X: 3, Y: 3}) // double-click db1 again
+	m.Update(tea.MouseMsg{Type: tea.MouseLeft, X: 3, Y: 4})
+	m.Update(tea.MouseMsg{Type: tea.MouseLeft, X: 3, Y: 4}) // double-click db1 again
 	if m.form == nil || m.form.mode != formEdit || m.form.oldName != "db1" {
 		t.Fatalf("edit-mode double-click must open the EDIT form for db1: %+v", m.form)
 	}
@@ -400,7 +408,7 @@ func TestEditMode_EnterEditOnOpsRowArmedOpsStillWorks(t *testing.T) {
 
 	// Armed EDIT opens the last-selected extra server (selection survives the
 	// trip over the ops row like in normal mode).
-	m.serverCursor = 1 // db1
+	m.serverCursor = 2 // db1 (0 localhost, 1 herdr)
 	m.srvCursor = 0
 	m.opsSel = opEdit
 	m.Update(teaKeyMsg("enter"))
@@ -414,7 +422,7 @@ func TestEditMode_EnterEditOnOpsRowArmedOpsStillWorks(t *testing.T) {
 	m.srvCursor = 0
 	m.opsSel = opEdit
 	m.Update(teaKeyMsg("enter"))
-	if m.form != nil || !strings.Contains(m.status, "built-in") {
+	if m.form != nil || !strings.Contains(m.status, "内置项不可编辑") {
 		t.Fatalf("armed EDIT on builtin localhost must hint, got form=%v status=%q", m.form != nil, m.status)
 	}
 }
