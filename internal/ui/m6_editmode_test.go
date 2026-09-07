@@ -1,9 +1,10 @@
 package ui
 
-// M6 tests: servers open in brand-new panes in the right main area (nothing
-// is typed into an existing pane), and the servers list gains an edit mode
-// whose affordances are the angle-bracket ops line (<NEW> <EDIT>), a green
-// cursor and Enter/→ editing semantics for server and folder rows.
+// M6/M8 tests: the servers list gains an edit mode whose affordances are the
+// angle-bracket ops line (<NEW> <EDIT>), a green cursor and Enter/→ editing
+// semantics for server and folder rows; sidebar servers now open brand-new
+// Zellij tabs (nothing is typed into an existing pane and no right-pane
+// split is created).
 
 import (
 	"os"
@@ -439,11 +440,11 @@ func TestCellText_ColourEscapesAreZeroWidth(t *testing.T) {
 	}
 }
 
-// TestSshEntry_OpenInsideZellijUsesNewPaneWithPassword verifies the full UI
-// path for a password-protected server: sshpass argv reaches new-pane (fake
-// sshpass + fake zellij in the same temp PATH) and nothing is typed into
-// existing panes.
-func TestSshEntry_OpenInsideZellijUsesNewPaneWithPassword(t *testing.T) {
+// TestSshEntry_OpenInsideZellijUsesNewTabWithPassword verifies the full UI
+// path for a password-protected server in the sidebar: sshpass argv reaches
+// `zellij action new-tab --name … --` (fake sshpass + fake zellij in the same
+// temp PATH) and nothing is typed into existing panes.
+func TestSshEntry_OpenInsideZellijUsesNewTabWithPassword(t *testing.T) {
 	t.Setenv("ZELLIJ", "1")
 	dir := t.TempDir()
 	log := filepath.Join(dir, "zellij.log")
@@ -465,10 +466,10 @@ func TestSshEntry_OpenInsideZellijUsesNewPaneWithPassword(t *testing.T) {
 	}
 	raw, _ := os.ReadFile(log)
 	s := string(raw)
-	if !strings.Contains(s, "new-pane -- sshpass -p s3cr3t ssh root@10.0.0.5") {
-		t.Fatalf("password must ride inside the new-pane argv: %s", s)
+	if !strings.Contains(s, "action new-tab --name db1 -- sshpass -p s3cr3t ssh root@10.0.0.5") {
+		t.Fatalf("password must ride inside the new-tab argv: %s", s)
 	}
-	if strings.Contains(s, "write") {
-		t.Fatalf("M6 must never type into an existing pane: %s", s)
+	if strings.Contains(s, "write") || strings.Contains(s, "new-pane") {
+		t.Fatalf("M8 sidebar must never type into an existing pane or new-pane: %s", s)
 	}
 }

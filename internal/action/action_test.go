@@ -160,23 +160,23 @@ func TestSshNewPanePlan_PasswordMissingSshpass_HintPlan(t *testing.T) {
 	}
 }
 
-func TestBuild_InZellij_SshUsesNewPane(t *testing.T) {
+func TestBuild_InZellij_SshOpensNewTab(t *testing.T) {
 	t.Setenv("ZELLIJ", "1")
 	e := servers.Entry{Alias: "github.com", Source: "ssh", SshAlias: "github.com"}
 	p := Build(e)
 	if !p.UseZellij || p.Detected != "zellij" {
 		t.Fatalf("expected in-zellij plan: %+v", p)
 	}
-	if len(p.Steps) != 2 || p.Steps[0][0] != "zellij" {
-		t.Fatalf("steps wrong: %#v", p.Steps)
+	if len(p.Steps) != 1 {
+		t.Fatalf("sidebar open must be exactly one new-tab step: %#v", p.Steps)
 	}
-	if !reflect.DeepEqual(p.Steps[1], []string{"zellij", "action", "new-pane", "--", "ssh", "github.com"}) {
-		t.Fatalf("second step must be new-pane with the ssh argv: %#v", p.Steps[1])
+	if !reflect.DeepEqual(p.Steps[0], []string{"zellij", "action", "new-tab", "--name", "github.com", "--", "ssh", "github.com"}) {
+		t.Fatalf("step must be a new-tab with the ssh argv: %#v", p.Steps[0])
 	}
 	for _, s := range p.Steps {
 		joined := strings.Join(s, " ")
-		if strings.Contains(joined, "new-tab") || strings.Contains(joined, "write") {
-			t.Fatalf("M6 must never open a tab or type into a pane: %v", s)
+		if strings.Contains(joined, "new-pane") || strings.Contains(joined, "write") || strings.Contains(joined, "move-focus") {
+			t.Fatalf("M8 sidebar must never new-pane / write / move-focus: %v", s)
 		}
 	}
 }
@@ -198,20 +198,26 @@ func TestBuild_OutsideZellij_IsHintOnly(t *testing.T) {
 	}
 }
 
-func TestBuild_LocalhostInsideZellijOpensLocalPane(t *testing.T) {
+func TestBuild_LocalhostInsideZellijOpensNewTab(t *testing.T) {
 	t.Setenv("ZELLIJ", "1")
+	// Deterministic shell resolution: no fish on the empty PATH, no $SHELL.
+	t.Setenv("PATH", emptyPathDir(t))
+	t.Setenv("SHELL", "")
 	p := Build(servers.Entry{Alias: "localhost", Source: "builtin"})
 	if p.TabName != "local" || p.Detected != "zellij" || !p.UseZellij {
 		t.Fatalf("metadata wrong: %+v", p)
 	}
-	if len(p.Steps) != 2 {
-		t.Fatalf("localhost must move focus right then new-pane: %#v", p.Steps)
+	if len(p.Steps) != 1 {
+		t.Fatalf("localhost must be exactly one new-tab step: %#v", p.Steps)
 	}
-	if !reflect.DeepEqual(p.Steps[0], []string{"zellij", "action", "move-focus", "right"}) {
-		t.Fatalf("step 0 must move focus right: %#v", p.Steps[0])
+	if !reflect.DeepEqual(p.Steps[0], []string{"zellij", "action", "new-tab", "--name", "local"}) {
+		t.Fatalf("localhost step must be a bare new-tab (no shell): %#v", p.Steps[0])
 	}
-	if p.Steps[1][0] != "zellij" || p.Steps[1][2] != "new-pane" {
-		t.Fatalf("step 1 must be a new-pane: %#v", p.Steps[1])
+	for _, s := range p.Steps {
+		joined := strings.Join(s, " ")
+		if strings.Contains(joined, "new-pane") || strings.Contains(joined, "write") || strings.Contains(joined, "move-focus") {
+			t.Fatalf("localhost sidebar must never new-pane / write / move-focus: %v", s)
+		}
 	}
 }
 
@@ -237,6 +243,151 @@ func TestLocalhostNewPanePlan_NoShellDefaultsToNewPane(t *testing.T) {
 	}
 	if !reflect.DeepEqual(p.Steps, want) {
 		t.Fatalf("LocalhostNewPanePlan Steps = %#v, want %#v", p.Steps, want)
+	}
+}
+
+// ----- M8 sidebar new-tab plans ---------------------------------------------
+
+// TestSshNewTabPlan_Steps pins the exact M8 sidebar sequence for one ssh
+// entry: one `zellij action new-tab --name <tab> -- ssh …` step. No
+// move-focus, no new-pane, nothing is typed into an existing pane.
+func TestSshNewTabPlan_Steps(t *testing.T) {
+	e := servers.Entry{Alias: "db1", Source: "extra", User: "root", Host: "10.0.0.5", Port: 2222}
+	p := SshNewTabPlan(e)
+	if !p.UseZellij || p.Detected != "zellij" {
+		t.Fatalf("metadata wrong: %+v", p)
+	}
+	if p.TabName != "db1" || p.SshTarget != "root@10.0.0.5" {
+		t.Fatalf("metadata wrong: %+v", p)
+	}
+	want := [][]string{
+		{"zellij", "action", "new-tab", "--name", "db1", "--", "ssh", "-p", "2222", "root@10.0.0.5"},
+	}
+	if !reflect.DeepEqual(p.Steps, want) {
+		t.Fatalf("Steps = %#v\nwant %#v", p.Steps, want)
+	}
+	for _, s := range p.Steps {
+		joined := strings.Join(s, " ")
+		if strings.Contains(joined, "new-pane") || strings.Contains(joined, "write") || strings.Contains(joined, "move-focus") {
+			t.Fatalf("M8 sidebar new-tab plan must not new-pane/write/move-focus: %v", s)
+		}
+	}
+}
+
+func TestSshNewTabPlan_PasswordSshpassInArgv(t *testing.T) {
+	t.Setenv("PATH", fakeTool(t, "sshpass"))
+	e := servers.Entry{Alias: "db1", Source: "extra", User: "root", Host: "10.0.0.5", Port: 22, Password: "pw"}
+	p := SshNewTabPlan(e)
+	want := []string{"zellij", "action", "new-tab", "--name", "db1", "--", "sshpass", "-p", "pw", "ssh", "root@10.0.0.5"}
+	if len(p.Steps) != 1 || !reflect.DeepEqual(p.Steps[0], want) {
+		t.Fatalf("new-tab argv must carry sshpass: %#v want %#v", p.Steps, want)
+	}
+}
+
+func TestSshNewTabPlan_PasswordMissingSshpass_HintPlan(t *testing.T) {
+	t.Setenv("PATH", emptyPathDir(t))
+	e := servers.Entry{Alias: "db1", Source: "extra", User: "root", Host: "10.0.0.5", Password: "s3cr3t"}
+	p := SshNewTabPlan(e)
+	if !p.NeedSshpass || len(p.Steps) != 0 || p.UseZellij {
+		t.Fatalf("hint plan shape wrong: %+v", p)
+	}
+}
+
+func TestLocalhostNewTabPlan_WithShell(t *testing.T) {
+	p := LocalhostNewTabPlan("fish")
+	want := [][]string{{"zellij", "action", "new-tab", "--name", "local", "--", "fish"}}
+	if !reflect.DeepEqual(p.Steps, want) {
+		t.Fatalf("LocalhostNewTabPlan Steps = %#v, want %#v", p.Steps, want)
+	}
+	if p.TabName != "local" || !p.UseZellij {
+		t.Fatalf("LocalhostNewTabPlan metadata wrong: %+v", p)
+	}
+}
+
+func TestLocalhostNewTabPlan_NoShellDefaultsToNewTab(t *testing.T) {
+	p := LocalhostNewTabPlan("")
+	want := [][]string{{"zellij", "action", "new-tab", "--name", "local"}}
+	if !reflect.DeepEqual(p.Steps, want) {
+		t.Fatalf("LocalhostNewTabPlan Steps = %#v, want %#v", p.Steps, want)
+	}
+	if len(p.Steps[0]) != 5 {
+		t.Fatalf("no-shell new tab must carry no command after --name: %#v", p.Steps[0])
+	}
+}
+
+// ----- M8 standalone exec argv ----------------------------------------------
+
+// TestSshExecArgv_ResolvesAbsoluteClient: argv[0] must be the absolute path
+// to ssh (syscall.Exec does no $PATH lookup); the ssh destination follows.
+func TestSshExecArgv_ResolvesAbsoluteClient(t *testing.T) {
+	dir := fakeTool(t, "ssh")
+	t.Setenv("PATH", dir)
+	e := servers.Entry{Alias: "web01", Source: "ssh", SshAlias: "web01"}
+	argv, need := SshExecArgv(e)
+	if need {
+		t.Fatalf("no password: need must be false")
+	}
+	if len(argv) != 2 || argv[0] != filepath.Join(dir, "ssh") || argv[1] != "web01" {
+		t.Fatalf("argv = %#v, want [%q web01]", argv, filepath.Join(dir, "ssh"))
+	}
+}
+
+func TestSshExecArgv_PasswordResolvesSshpass(t *testing.T) {
+	dir := fakeTool(t, "sshpass")
+	t.Setenv("PATH", dir)
+	e := servers.Entry{Alias: "db1", Source: "extra", User: "root", Host: "10.0.0.5", Port: 2222, Password: "pw"}
+	argv, need := SshExecArgv(e)
+	if need {
+		t.Fatalf("sshpass present: need must be false")
+	}
+	if argv[0] != filepath.Join(dir, "sshpass") {
+		t.Fatalf("argv[0] must be the absolute sshpass, got %q", argv[0])
+	}
+	if !reflect.DeepEqual(argv[1:], []string{"-p", "pw", "ssh", "-p", "2222", "root@10.0.0.5"}) {
+		t.Fatalf("argv tail wrong: %#v", argv[1:])
+	}
+}
+
+func TestSshExecArgv_PasswordMissingSshpass_Need(t *testing.T) {
+	t.Setenv("PATH", emptyPathDir(t))
+	e := servers.Entry{Alias: "db1", Source: "extra", User: "root", Host: "10.0.0.5", Password: "pw"}
+	argv, need := SshExecArgv(e)
+	if !need || len(argv) != 0 {
+		t.Fatalf("need=true with empty argv expected, got argv=%#v need=%v", argv, need)
+	}
+}
+
+func TestSshExecArgv_MissingClientIsEmpty(t *testing.T) {
+	t.Setenv("PATH", emptyPathDir(t))
+	e := servers.Entry{Alias: "web01", Source: "ssh", SshAlias: "web01"}
+	argv, need := SshExecArgv(e)
+	if need || len(argv) != 0 {
+		t.Fatalf("unresolvable client must yield empty argv with need=false, got %#v need=%v", argv, need)
+	}
+}
+
+func TestLocalShellPath_PrefersFish(t *testing.T) {
+	dir := fakeTool(t, "fish")
+	t.Setenv("PATH", dir)
+	t.Setenv("SHELL", "/bin/bash")
+	if got := LocalShellPath(); got != filepath.Join(dir, "fish") {
+		t.Fatalf("LocalShellPath() = %q, want %q", got, filepath.Join(dir, "fish"))
+	}
+}
+
+func TestLocalShellPath_FallsBackToShell(t *testing.T) {
+	t.Setenv("PATH", emptyPathDir(t))
+	t.Setenv("SHELL", "/usr/bin/zsh")
+	if got := LocalShellPath(); got != "/usr/bin/zsh" {
+		t.Fatalf("LocalShellPath() = %q, want $SHELL fallback", got)
+	}
+}
+
+func TestLocalShellPath_EmptyWithoutBoth(t *testing.T) {
+	t.Setenv("PATH", emptyPathDir(t))
+	t.Setenv("SHELL", "")
+	if got := LocalShellPath(); got != "" {
+		t.Fatalf("LocalShellPath() = %q, want empty", got)
 	}
 }
 

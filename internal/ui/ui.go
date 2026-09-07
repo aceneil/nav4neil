@@ -221,6 +221,14 @@ type Model struct {
 	ctx string // "local" or last-selected ssh alias
 	wss *ws.Server
 
+	// M8 standalone exec: in SectionBoth mode picking a server/file records
+	// the target argv here and returns tea.Quit. bubbletea shuts down
+	// (restores the terminal), then main() replaces this process with
+	// execArgv via syscall.Exec — the current pane keeps running ssh / the
+	// local shell / the file editor and the nav never comes back. nil means
+	// a normal quit.
+	execArgv []string
+
 	// Mouse double-click detection.
 	lastClickAt time.Time
 	lastClickX  int
@@ -442,17 +450,27 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // helpText returns the keybinding summary appropriate for the
 // currently rendered section. In single-section mode Tab / 1 / 2 are
 // omitted (they would be no-ops), and the 'r' description is tightened
-// to the area that actually refreshes.
+// to the area that actually refreshes. M8 wording reflects the two launch
+// modes: sidebar (--section servers|files) opens new Zellij tabs, while
+// standalone (SectionBoth) quits the nav and execs the target in the
+// current pane.
 func helpText(s Section) string {
 	switch s {
 	case SectionServers:
-		return "j/k move · ←/→ or h/l arm [NEW]/[EDIT] · enter open or fold group · n new · e edit-mode · / filter · r refresh · ? help · q quit"
+		return "sidebar: enter = new tab · j/k move · ←/→ or h/l arm [NEW]/[EDIT] · group fold · n new · e edit-mode · / filter · r refresh · ? help · q quit"
 	case SectionFiles:
-		return "j/k move · enter open · h/l parent/into · / filter · r refresh dir · ? help · q quit"
+		return "sidebar: enter = wz-open (floating) · j/k move · h/l parent/into · / filter · r refresh dir · ? help · q quit"
 	default:
-		return "j/k move · enter open · / filter · 1/2 panes · tab cycle · r refresh · ? help · q quit"
+		return "standalone: enter = run in this pane & nav exits · j/k move · / filter · 1/2 panes · tab cycle · r refresh · ? help · q quit"
 	}
 }
+
+// standalone reports whether this instance runs in standalone mode — the
+// default `nav4neil` with SectionBoth. Standalone opens quit the TUI and
+// replace the current process (ssh / local shell / editor). Sidebar
+// instances (--section servers|files) instead ask Zellij to open new tabs
+// and keep the nav alive.
+func (m *Model) standalone() bool { return m.section == SectionBoth }
 
 func (m *Model) handleServersKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
@@ -493,11 +511,13 @@ func (m *Model) handleServersKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "e", "E":
 		m.toggleEditMode()
 	case "enter":
+		var cmd tea.Cmd
 		if m.editMode {
-			m.activateEditRow()
+			cmd = m.activateEditRow()
 		} else {
-			m.activateServerRow()
+			cmd = m.activateServerRow()
 		}
+		return m, cmd
 	}
 	return m, nil
 }
@@ -533,10 +553,11 @@ func (m *Model) jumpSrvFirstItem() {
 
 // activateEditRow runs the M6 edit-mode semantics of Enter: an entry row
 // opens its EDIT form, a folder row folds/unfolds (Enter never renames), and
-// the ops row triggers its armed op.
-func (m *Model) activateEditRow() {
+// the ops row triggers its armed op. Edit-mode actions never open a
+// connection, so it always returns nil.
+func (m *Model) activateEditRow() tea.Cmd {
 	if len(m.srvRows) == 0 {
-		return
+		return nil
 	}
 	r := m.srvRows[m.srvCursor]
 	switch r.kind {
@@ -551,6 +572,7 @@ func (m *Model) activateEditRow() {
 	case srvRowEntry:
 		m.editEntry(r.entry)
 	}
+	return nil
 }
 
 // editCurrentRow implements the M6 edit-mode semantics of →/l: the row under
@@ -647,11 +669,14 @@ func (m *Model) syncSelectionToRow() {
 
 // activateServerRow runs the action of the row under the display cursor:
 // the ops row opens the armed overlay (NEW/EDIT), a folder row toggles
-// collapse, an entry row connects to the server.
-func (m *Model) activateServerRow() {
+// collapse, an entry row connects to the server. The returned command is
+// tea.Quit when a standalone (SectionBoth) open asked the TUI to exit so
+// main() can exec the target; sidebar opens (and every non-entry row) stay
+// in the UI and return nil.
+func (m *Model) activateServerRow() tea.Cmd {
 	if len(m.srvRows) == 0 {
 		m.status = "no servers to open (refresh with r)"
-		return
+		return nil
 	}
 	r := m.srvRows[m.srvCursor]
 	switch r.kind {
@@ -664,8 +689,9 @@ func (m *Model) activateServerRow() {
 	case srvRowGroup:
 		m.toggleGroup(r.group)
 	case srvRowEntry:
-		m.openEntry(r.entry)
+		return m.openEntry(r.entry)
 	}
+	return nil
 }
 
 // toggleGroup folds/unfolds a group folder and keeps the cursor on it.
@@ -714,9 +740,9 @@ func (m *Model) handleFilesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.refreshFiles()
 		}
 	case "l", "right":
-		m.enterSelectedFile()
+		return m, m.enterSelectedFile()
 	case "enter":
-		m.enterSelectedFile()
+		return m, m.enterSelectedFile()
 	}
 	return m, nil
 }
@@ -940,14 +966,14 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			// open on double click; folder rows select on click and fold on
 			// double click.
 			if y >= 1 && y < m.height-1 {
-				m.clickServerListRow(msg.X, y-1, double)
+				return m, m.clickServerListRow(msg.X, y-1, double)
 			}
 			return m, nil
 		case SectionFiles:
 			if y >= 1 && y < m.height-1 {
 				m.fileCur = clamp(y-1, 0, max(0, len(m.fileView)-1))
 				if double {
-					m.enterSelectedFile()
+					return m, m.enterSelectedFile()
 				}
 			}
 			return m, nil
@@ -955,14 +981,13 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		// SectionBoth: server rows start immediately after the server header.
 		if y >= 1 && y < m.serverListEnd() {
 			m.focus = paneServers
-			m.clickServerListRow(msg.X, y-1, double)
-			return m, nil
+			return m, m.clickServerListRow(msg.X, y-1, double)
 		}
 		if y >= m.serverListEnd()+2 && y < m.height-1 {
 			m.focus = paneFiles
 			m.fileCur = clamp(y-(m.serverListEnd()+2), 0, max(0, len(m.fileView)-1))
 			if double {
-				m.enterSelectedFile()
+				return m, m.enterSelectedFile()
 			}
 			return m, nil
 		}
@@ -984,9 +1009,11 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 // onto the row model and applies the row's mouse behaviour. x matters only
 // for the ops row, where it decides between the [NEW] (left) and [EDIT]
 // (right) half. double distinguishes the second click of a double-click pair.
-func (m *Model) clickServerListRow(x, vis int, double bool) {
+// A standalone double-click on a server returns tea.Quit (exec hand-off);
+// everything else keeps the TUI running and returns nil.
+func (m *Model) clickServerListRow(x, vis int, double bool) tea.Cmd {
 	if len(m.srvRows) == 0 {
-		return
+		return nil
 	}
 	abs := m.srvTop + vis
 	if abs >= len(m.srvRows) {
@@ -1021,10 +1048,11 @@ func (m *Model) clickServerListRow(x, vis int, double bool) {
 				// opening a connection (avoids accidental ssh launches).
 				m.editEntry(r.entry)
 			} else {
-				m.openEntry(r.entry)
+				return m.openEntry(r.entry)
 			}
 		}
 	}
+	return nil
 }
 
 // clampSrvTop keeps the scroll window anchored on the display cursor when
@@ -1061,132 +1089,204 @@ func (m *Model) serverListEnd() int {
 // openSelectedServer opens the currently selected server entry (kept as the
 // entry-level entry point used by tests and legacy callers; keyboard Enter
 // goes through activateServerRow so ops/folder rows get their own actions).
-func (m *Model) openSelectedServer() {
+// The returned command is tea.Quit when a standalone open replaced the TUI.
+func (m *Model) openSelectedServer() tea.Cmd {
 	if len(m.serversView) == 0 {
 		m.status = "no servers to open (refresh with r)"
-		return
+		return nil
 	}
 	if m.serverCursor < 0 || m.serverCursor >= len(m.serversView) {
 		m.serverCursor = clamp(m.serverCursor, 0, max(0, len(m.serversView)-1))
 	}
-	m.openEntry(m.serversView[m.serverCursor])
+	return m.openEntry(m.serversView[m.serverCursor])
 }
 
-// openEntry connects to one real server row (M6). The built-in localhost
-// never opens an ssh session: inside Zellij it adds a fresh local-shell pane
-// to the right main area. Every other entry — ssh-config hosts and
-// servers.txt entries alike — opens its own brand-new pane in the right main
-// area of the current tab, running the ssh command directly (zellij action
-// new-pane -- ssh …). Nothing is typed into an existing pane anymore, and no
-// full-screen tab is created: repeating a click on the same server opens one
-// more pane each time.
-func (m *Model) openEntry(e servers.Entry) {
+// openEntry connects to one real server row. The behaviour depends on the
+// launch mode (M8):
+//
+//   - standalone (SectionBoth): prepare the ssh argv for exec(2) and return
+//     tea.Quit — the TUI exits and main() replaces this process with the ssh
+//     client, so the current pane keeps the session and the nav never
+//     returns.
+//   - sidebar (--section servers|files): open a brand-new full Zellij tab
+//     whose initial command is the ssh argv (`zellij action new-tab --name
+//     <tab> -- ssh …`); the nav stays alive and its status squares keep
+//     polling the tab list.
+//
+// The built-in localhost never opens an ssh session — openLocalhost handles
+// it. A stored password without sshpass on PATH turns into a status hint in
+// both modes instead of a launch.
+func (m *Model) openEntry(e servers.Entry) tea.Cmd {
 	if e.Source == "builtin" {
-		m.openLocalhost()
-		return
+		return m.openLocalhost()
 	}
+	if m.standalone() {
+		return m.openStandaloneSsh(e)
+	}
+	// Sidebar mode: ask Zellij for a brand-new tab.
 	plan := action.Build(e)
 	if plan.NeedSshpass {
 		// A password is stored for this server but sshpass is not on PATH:
 		// do not launch anything — tell the user how to fix it.
 		m.status = "password set but sshpass missing — sudo apt install sshpass (or use keys)"
-		return
+		return nil
 	}
 	if len(plan.Steps) == 0 {
-		// Outside Zellij there is no pane layout to steer.
-		m.status = fmt.Sprintf("→ %s: not inside Zellij — start zellij to open it in the right pane", plan.TabName)
-		return
-	}
-	// M7: inside Zellij, consult the live layout once and, when the right
-	// area is cleanly analysable, target the biggest right pane (walk focus
-	// onto it, then force a visible direction-right split). An unparseable
-	// or stacked layout falls back to the M6 plan built above.
-	if action.InZellij() {
-		if dump, ok := action.DumpLayout(context.Background()); ok {
-			plan = action.SshNewPanePlanTargeted(e, action.AnalyzeLayout(dump))
-		}
+		// Outside Zellij there is no session to add a tab to.
+		m.status = fmt.Sprintf("→ %s: not inside Zellij — start zellij to open it in a new tab", plan.TabName)
+		return nil
 	}
 	m.ctx = servers.TabName(e)
 	if m.wss != nil {
 		m.wss.SetContext(m.ctx)
 	}
-	m.status = fmt.Sprintf("→ %s  (new pane, right area)", plan.TabName)
+	m.status = fmt.Sprintf("→ %s  (new tab)", plan.TabName)
 	if err := action.Run(context.Background(), plan); err != nil {
 		m.noteOpenResult(e.Alias, err)
 		m.status = "exec failed: " + err.Error()
-		return
+		return nil
 	}
 	// Record the successful open: clears any red and — in fallback mode
 	// (outside Zellij / poll failing) — turns the square green.
 	m.noteOpenResult(e.Alias, nil)
+	return nil
 }
 
-// openLocalhost implements the M6 localhost behaviour: instead of opening a
-// full-screen new tab or typing into an existing pane, focus the right-hand
-// main area and open a new pane there running the local shell (fish when
-// available — see action.LocalShell), so every click on localhost yields its
-// own fresh local session. Outside Zellij there is no pane layout to steer,
-// so we surface a status-bar hint only.
-func (m *Model) openLocalhost() {
+// openStandaloneSsh prepares the exec argv for an ssh entry in standalone
+// mode. argv[0] is resolved to an absolute path (syscall.Exec does no PATH
+// lookup); when nothing runnable exists the user gets a status hint and the
+// TUI stays up.
+func (m *Model) openStandaloneSsh(e servers.Entry) tea.Cmd {
+	argv, need := action.SshExecArgv(e)
+	if need {
+		m.status = "password set but sshpass missing — sudo apt install sshpass (or use keys)"
+		return nil
+	}
+	if len(argv) == 0 {
+		m.status = "ssh client not found on PATH (install openssh-client)"
+		return nil
+	}
+	m.ctx = servers.TabName(e)
+	return m.prepareExec(argv)
+}
+
+// openLocalhost handles the built-in localhost row. In standalone mode it
+// asks the TUI to exit and exec the local shell (fish preferred — see
+// action.LocalShellPath) in the current pane; in sidebar mode it opens a
+// new Zellij tab named "local" running that shell. When no shell can be
+// resolved (no fish, no $SHELL) it degrades to a status hint.
+func (m *Model) openLocalhost() tea.Cmd {
+	if m.standalone() {
+		shell := action.LocalShellPath()
+		if shell == "" {
+			m.status = "localhost: no local shell (install fish or set $SHELL)"
+			return nil
+		}
+		m.ctx = "local"
+		return m.prepareExec([]string{shell})
+	}
 	if !action.InZellij() {
-		m.status = "localhost: not inside Zellij — start zellij to open a local shell in the right pane"
-		return
+		m.status = "localhost: not inside Zellij — start zellij to open a local shell in a new tab"
+		return nil
 	}
-	shell := action.LocalShell()
-	plan := action.LocalhostNewPanePlan(shell)
-	// M7: prefer targeting the biggest right pane from the live layout
-	// (falls back to the M6 plan when the dump cannot steer us).
-	if dump, ok := action.DumpLayout(context.Background()); ok {
-		plan = action.LocalhostNewPanePlanTargeted(shell, action.AnalyzeLayout(dump))
-	}
+	plan := action.LocalhostNewTabPlan(action.LocalShell())
 	m.ctx = "local"
 	if m.wss != nil {
 		m.wss.SetContext(m.ctx)
 	}
+	m.status = "→ local shell (new tab)"
 	if err := action.Run(context.Background(), plan); err != nil {
 		m.noteOpenResult("localhost", err)
 		m.status = "exec failed: " + err.Error()
-		return
+		return nil
 	}
 	m.noteOpenResult("localhost", nil)
-	m.status = "→ local shell (new pane, right area)"
+	return nil
 }
 
-func (m *Model) enterSelectedFile() {
+// enterSelectedFile runs the action of the currently highlighted file row.
+// Folders/".." navigate; files open according to the launch mode: sidebar
+// keeps the historical wz-open.sh / xdg-open spawn (floating nvim/vim in
+// Zellij), while standalone exits the TUI and execs the editor in the
+// current pane. The returned tea.Cmd is non-nil (tea.Quit) exactly for that
+// standalone exec path.
+func (m *Model) enterSelectedFile() tea.Cmd {
 	if len(m.fileView) == 0 {
-		return
+		return nil
 	}
 	name := m.fileView[m.fileCur].Name
 	if name == ".." {
 		_ = m.files.Parent()
 		m.refreshFiles()
-		return
+		return nil
 	}
 	full := m.files.PathOf(name)
 	if m.files.IsDir(name) {
 		if _, err := m.files.Into(name); err != nil {
 			m.status = err.Error()
-			return
+			return nil
 		}
 		m.refreshFiles()
-		return
+		return nil
 	}
-	// File: prefer wz-open.sh, then xdg-open.
+	// File.
+	if m.standalone() {
+		argv := editorArgv(full)
+		if len(argv) == 0 {
+			m.status = "no editor found (install nvim or vim)"
+			return nil
+		}
+		return m.prepareExec(argv)
+	}
+	// Sidebar: prefer wz-open.sh (floating nvim/vim), then xdg-open.
 	if path, err := exec.LookPath("wz-open.sh"); err == nil {
 		cmd := exec.Command(path, full) //nolint:gosec
 		_ = cmd.Start()
 		go func() { _ = cmd.Wait() }()
 		m.status = "opened: " + full
-		return
+		return nil
 	}
 	if path, err := exec.LookPath("xdg-open"); err == nil {
 		cmd := exec.Command(path, full) //nolint:gosec
 		_ = cmd.Start()
 		go func() { _ = cmd.Wait() }()
 		m.status = "xdg-open: " + full
-		return
+		return nil
 	}
 	m.status = "no opener (install ~/.local/bin/wz-open.sh)"
+	return nil
+}
+
+// editorArgv mirrors wz-open.sh's editor detection for the standalone file
+// open: nvim preferred, vim as the fallback. argv[0] is an absolute path
+// (syscall.Exec performs no $PATH lookup). nil when neither editor exists.
+func editorArgv(path string) []string {
+	for _, ed := range []string{"nvim", "vim"} {
+		if p, err := exec.LookPath(ed); err == nil {
+			return []string{p, path}
+		}
+	}
+	return nil
+}
+
+// prepareExec is the standalone-mode cleanup + exec hand-off. It stops the
+// ws server (the deferred Stop in main() will never run — syscall.Exec
+// replaces the process without unwinding defers), records argv for main(),
+// and returns tea.Quit so bubbletea performs its normal shutdown (restores
+// the terminal, leaves the alt screen) before main() execs the target.
+func (m *Model) prepareExec(argv []string) tea.Cmd {
+	if m.wss != nil {
+		m.wss.Stop()
+	}
+	m.execArgv = append(m.execArgv[:0], argv...)
+	return tea.Quit
+}
+
+// ExecArgv returns the argv that should replace this process after the TUI
+// exits (standalone open), or nil for a normal quit. main() calls
+// syscall.Exec with it once prog.Run has returned.
+func (m *Model) ExecArgv() []string {
+	return append([]string(nil), m.execArgv...)
 }
 
 func (m *Model) reloadServers() {

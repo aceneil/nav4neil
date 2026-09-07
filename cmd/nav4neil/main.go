@@ -8,19 +8,22 @@
 //	--start-dir <path>   起始目录（默认 $HOME）
 //	--ws-port <n>        ws 起始端口（默认 39771，被占用自动 +1；环境变量 NEILWZ_NAV_TUI_WS 覆盖）
 //	--no-ws              禁用内嵌 websocket 服务（用于最小化场景）
-//	--section <s>        渲染区段：both（默认）/ servers / files。
-//	                     单段模式便于把 nav4neil 拆到两个 Zellij pane，
-//	                     通过 Alt+h/j/k/l 在 pane 间挪焦点，
-//	                     每个 pane 内只用 j/k/Enter/… 即可。
+//	--section <s>        渲染区段：both（默认）/ servers / files
 //	--list               解析服务器列表并以易读文本打印到 stdout，退出
 //	                     （无 DISPLAY/无 TTY 的 CI 环境仍可验证数据通路）
 //	--version            打印版本
 //	--help               帮助
 //
-// 与 Zellij 集成：在 zellij pane 内运行时，选择「服务器」会先
-// `zellij action move-focus right` 再 `zellij action new-pane -- ssh …`，
-// 在右侧主区域新开窗格运行该服务器（不再开新 tab、不向已有窗格打字）。
-// localhost 同样 new-pane 打开本地默认 shell。不在 zellij 时降级为提示。
+// 两种使用模式（M8）：
+//
+//  1. 侧栏嵌入模式 —— 带 --section servers|files 启动（wznav 布局左右两个
+//     实例）。点服务器会 `zellij action new-tab --name <tab> -- ssh …`
+//     开一个全新 Zellij tab（localhost 新 tab 跑本地 shell），nav 继续留在
+//     左栏；点文件仍走 wz-open.sh 悬浮窗 nvim/vim。
+//  2. 独立模式 —— 直接运行 nav4neil（默认 both，无 --section）。选中服务器
+//     或文件后 TUI 先自行退出（bubbletea 还原终端），再把当前进程
+//     syscall.Exec 成目标命令（ssh / 本地 shell / nvim、vim），在当前 pane
+//     继续运行；ssh 退出后回到 shell，nav 不复活。
 package main
 
 import (
@@ -32,6 +35,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/mattn/go-isatty"
 
@@ -71,7 +75,7 @@ func main() {
 	// Use the short spelling requested by the Zellij workflow; Go flag also
 	// accepts the conventional long spelling (--section).
 	sectionInput := sectionFlag{value: "both"}
-	flag.Var(&sectionInput, "section", "渲染区段：both|servers|files（单段模式便于把 nav4neil 拆到两个 Zellij pane）")
+	flag.Var(&sectionInput, "section", "渲染区段：both|servers|files（默认 both=独立模式；servers|files=侧栏嵌入模式）")
 	flag.BoolVar(&showVer, "version", false, "打印版本并退出")
 	flag.BoolVar(&showHelp, "help", false, "打印帮助并退出")
 	flag.Parse()
@@ -88,9 +92,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  NEILWZ_NAV_TUI_WS=<port>   覆盖 --ws-port")
 		fmt.Fprintln(os.Stderr, "  HOME              起始目录 + ssh config 路径")
 		fmt.Fprintln(os.Stderr, "  XDG_CONFIG_HOME   servers.txt 所在 wezterm4neil/ 子目录根")
-		fmt.Fprintln(os.Stderr, "\n示例（Zellij 双 pane 拆分):")
-		fmt.Fprintln(os.Stderr, "  nav4neil --section servers   # 左上：服务器列表")
-		fmt.Fprintln(os.Stderr, "  nav4neil --section files     # 左下：文件浏览")
+		fmt.Fprintln(os.Stderr, "\n示例:")
+		fmt.Fprintln(os.Stderr, "  nav4neil                    # 独立模式：默认 both，选中后在本 pane exec ssh/nvim")
+		fmt.Fprintln(os.Stderr, "  nav4neil --section servers   # 侧栏嵌入：左上服务器列表，点选=开新 Zellij tab")
+		fmt.Fprintln(os.Stderr, "  nav4neil --section files     # 侧栏嵌入：左下文件浏览，Enter=wz-open 悬浮编辑器")
 		os.Exit(0)
 	}
 	if showVer {
@@ -128,7 +133,9 @@ func main() {
 	model := ui.NewModel(startDir, wss, section)
 	prog := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
-	// 退出后归还终端模式 + 关闭 ws（兜底；defer 在 SIGINT 下不保证执行）。
+	// 退出后归还终端模式 + 关闭 ws（兜底；defer 在 SIGINT 下不保证执行；
+	// 独立模式的 exec 走 syscall.Exec 替换进程、不会执行到这里，所以
+	// prepareExec 里已经提前停掉 ws）。
 	defer func() {
 		_ = prog.ReleaseTerminal()
 		if wss != nil {
@@ -136,9 +143,23 @@ func main() {
 		}
 	}()
 
-	if _, err := prog.Run(); err != nil {
+	final, err := prog.Run()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "nav4neil: TUI error: %v\n", err)
 		os.Exit(1)
+	}
+
+	// 独立模式（both）打开服务器/文件后：TUI 已正常退出（bubbletea 已还原
+	// 终端、离开 alt screen），ws 也在 prepareExec 中停掉。此时用
+	// syscall.Exec 把当前进程替换成目标命令（ssh / 本地 shell / nvim），
+	// 让 ssh 退出后直接回到外层 shell —— nav 不会复活。
+	if fm, ok := final.(*ui.Model); ok {
+		if argv := fm.ExecArgv(); len(argv) > 0 {
+			if err := syscall.Exec(argv[0], argv, os.Environ()); err != nil {
+				fmt.Fprintf(os.Stderr, "nav4neil: exec %v: %v\n", argv, err)
+				os.Exit(1)
+			}
+		}
 	}
 }
 

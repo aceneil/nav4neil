@@ -1,8 +1,10 @@
 # nav4neil
 
-`nav4neil` 是 WezTerm4Neil 的独立导航 TUI。它把 SSH 服务器列表和
-本地文件浏览组合在一个可嵌入的 Go 程序中，也可以拆成两个 Zellij pane，
-分别运行 `servers` 与 `files` 区段。
+`nav4neil` 是 WezTerm4Neil 的导航 TUI。它把 SSH 服务器列表和本地文件浏览
+组合在一个可嵌入的 Go 程序中，并区分两种使用模式（M8）：**独立模式**
+（直接运行 `nav4neil`，默认 `both`）在当前 pane 里执行所选目标；**侧栏
+嵌入模式**（`--section servers|files` 的两个实例放进 Zellij 左栏）点选后
+开全新 Zellij tab 或悬浮编辑器。
 
 ## 功能
 
@@ -29,20 +31,39 @@
   指针前面），颜色含义见下文「服务器状态方块」；分组文件夹行不画小方块
   （保留一个空格列保持对齐），组名与子行名称对齐。
 - 文件区段支持目录进入/返回、过滤、刷新、鼠标点击与 Nerd Font 文件图标。
-- 所有服务器（含 ssh 服务器）都以 **当前 Zellij tab 右侧主区域里的新建窗格**
-  使用，不再开新 tab 全屏、也不再向已有窗格打字（M6 替换 M5 的 write 注入）：
-  先 `zellij action move-focus right` 把焦点带到右主区，再
-  `zellij action new-pane -- ssh …` 让新窗格直接运行该 ssh（命令复用既有
-  ssh/sshpass 逻辑，作为 argv 传入、不经 shell）。每点一次（Enter/双击/
-  同服务器重复点）都会在右主区多开一个窗格。
-- 内置 `localhost` 使用同一套 new-pane 语义：在右主区新开一个窗格运行
-  本地默认 shell（fish 优先，其次 `$SHELL`；都没有就让 Zellij 用其默认
-  shell），每次点击 = 一个新的本机会话。
-- 不在 Zellij 内时，打开任何服务器 / localhost 都只在状态栏提示，
-  不执行任何命令。
 - 默认启动一个仅绑定 `127.0.0.1` 的 HTTP/WebSocket 上下文服务；服务不可用时
   TUI 仍会继续运行。
-- 默认布局为上下两个 pane；`-section` 可只运行一个区段，便于嵌入布局。
+- 默认布局为上下两个 pane；`--section servers|files` 只运行一个区段
+  （侧栏嵌入模式）。
+
+## 两种使用模式（M8）
+
+模式由 `--section` 决定：**有 `--section servers|files` = 侧栏嵌入**；
+**不带 `--section`（默认 `both`）= 独立模式**。二者对「打开」的语义不同：
+
+| | 服务器 / localhost | 文件 |
+| --- | --- | --- |
+| 独立模式 `nav4neil`（both） | 当前 pane 内执行：先退出 TUI（bubbletea 还原终端），再把本进程 `syscall.Exec` 成 `ssh …`（localhost → 本地 shell fish/`$SHELL`）。ssh 退出后回到外层 shell，nav 不复活 | 当前 pane `exec nvim/vim <路径>`（检测同 wz-open：nvim 优先、vim 兜底） |
+| 侧栏嵌入 `--section servers` / `--section files` | 开一个**全新 Zellij tab**：`zellij action new-tab --name <tab> -- ssh …`（localhost → 新 tab 跑本地 shell），nav 继续留在左栏 | 走 `~/.local/bin/wz-open.sh` 悬浮窗 nvim/vim（Zellij 内为 floating pane） |
+
+要点：
+
+- 独立模式在**任何终端**都可用（不要求 Zellij）：回车/双击/右键同普通语义，
+  但动作 = 退出 + exec。exec 前 `prepareExec` 先停掉内嵌 ws 服务并记录 argv
+  （`syscall.Exec` 不会回卷 defer，所以不能等 main 的收尾），再由 bubbletea
+  正常退出清理 alt-screen / 还原终端，最后 main() 里 `syscall.Exec(argv[0],
+  argv, os.Environ())` 替换进程。argv[0] 一律解析为绝对路径（execve 不做
+  $PATH 查找）。缺依赖（无 sshpass、无 ssh、无编辑器、无本地 shell）时留在
+  TUI 内给状态栏提示。
+- 侧栏模式必须跑在 Zellij 会话里（wznav 布局的两个 pane 即如此）：点服务器
+  = 一条 `zellij action new-tab --name <tab> -- ssh …`（不再 move-focus /
+  new-pane / 向已有窗格打字，M8 恢复为整屏新 tab）；新 tab 以该 ssh 为初始
+  命令直接执行、不经 shell。不在 Zellij 内时侧栏只给状态栏提示，不执行。
+- 侧栏模式点文件仍走 wz-open.sh 悬浮窗（整屏 nvim/vim，退出自动关回布局）；
+  独立模式点文件是当前 pane exec 编辑器。
+- `sshpass` 密码逻辑两种模式一致：有密码必须 `sshpass` 在 PATH，否则状态栏
+  提示安装，什么都不执行。
+
 
 ## 构建与安装
 
@@ -78,14 +99,19 @@ nav4neil [options]
 -help               输出帮助
 ```
 
-默认模式在单个进程中显示两个区段：
+**独立模式**：不加 `-section`（默认 `both`）时单个进程显示上下两个区段。
+在该模式下回车/双击服务器或文件 = 退出 nav 并在当前 pane 执行目标
+（ssh / 本地 shell / nvim、vim），nav 不再回来：
 
 ```bash
 nav4neil
 ```
 
 `both` 模式下可用 `Tab` 在 pane 间切换，`1`/`2` 直接切换服务器/文件区段。
-单区段模式不会加载另一个不相关的数据源，适合放进 Zellij 的 stacked pane：
+
+**侧栏嵌入模式**：`-section servers|files` 只运行一个区段（也不会加载另一个
+不相关的数据源），适合放进 Zellij 的 stacked pane（wznav 布局）。此时点
+服务器开全新 Zellij tab、点文件走 wz-open 悬浮编辑器：
 
 ```kdl
 layout {
@@ -118,10 +144,10 @@ layout {
 | ▮ 黄 | 无对应 tab / 尚未打开（默认） |
 | ▮ 红 | 最近一次打开该服务器失败或异常；下一次成功打开、或对应 tab 重新出现后自动清除 |
 
-M6 起打开服务器不再创建新 tab（ssh 以新建窗格的方式在右主区运行），所以常规
-操作下 ssh 行不会凭空变绿：绿表示布局里仍存在与该服务器同名的 tab（旧版本遗留、
-或手动打开的 tab）。服务器条目到 tab 名的映射规则不变：内置 `localhost`
-对应 tab 名 `local`（该行本身只新开本地 shell 窗格、不输入命令），ssh 条目用别名，
+侧栏模式（`servers` 单区）打开服务器 = 开一个同名新 tab，所以点完通常
+几秒内变绿；独立模式（`both`）把 ssh 直接 exec 到当前 pane、不建 tab，
+ssh 行一般不会凭空变绿（除非别处手动开着同名 tab）。服务器条目到 tab 名
+的映射规则：内置 `localhost` 对应 tab 名 `local`，ssh 条目用别名，
 servers.txt 条目取 `user@host` 中 `@` 之后的部分（`root@db1` → `db1`）。
 分组文件夹行不画小方块（保留一列空格保持对齐）。
 
@@ -156,13 +182,14 @@ servers.txt 条目取 `user@host` 中 `@` 之后的部分（`root@db1` → `db1`
 - `Group` 有值的条目收进 `▾ group/` 文件夹；在该行按 Enter 或双击折叠为
   `▸ group/`（子行隐藏），再按一次展开。`Group` 为空的条目平铺在前，
   内置 `localhost` 恒在首位、不进组。
-- 打开服务器（平铺或组内）行为一致：在 Zellij 内先 `zellij action
-  move-focus right` 让焦点到右主区，再 `zellij action new-pane -- ssh …`
-  为这台服务器新开一个专属窗格（命令复用 ssh/sshpass 逻辑；每点一次都新开，
-  重复点同一台也再开一个）；不再开新 tab、也不再向已有窗格打字。
-- 内置 `localhost`：Zellij 内执行 move-focus right + `new-pane`（运行本地
-  默认 shell：fish 优先，其次 `$SHELL`，都没有则让 Zellij 用默认 shell），
-  每次点击新开一个本机 shell 窗格；不在 Zellij 内时仅状态栏提示。
+- 打开服务器（平铺或组内）行为按模式：**侧栏（servers 单区，Zellij 内）** =
+  一条 `zellij action new-tab --name <tab> -- ssh …` 开全新整屏 tab（命令复用
+  ssh/sshpass 逻辑、作为 argv 直接执行、不经 shell；不在 Zellij 内只提示）；
+  **独立（both）** = 退出 nav 并在当前 pane exec 该 ssh（localhost 同理 exec
+  本地 shell）。
+- 内置 `localhost`：独立模式 exec 本地默认 shell（fish 优先，其次 `$SHELL`）；
+  侧栏模式 `zellij action new-tab --name local [-- <shell>]` 开一个本机 shell
+  新 tab。两种模式都没有可用 shell 时仅状态栏提示。
 - M6 编辑模式：普通模式按 `e`/`E` 或单击操作行的 `[EDIT]` 半区进入——操作行
   显示为 `<NEW> <EDIT>`，聚焦指针变绿，光标自动跳到列表最上面的服务器。
   此时上下移动照常；`Enter` 对服务器 = 打开该服务器的 EDIT 表单、对文件夹 =
@@ -172,19 +199,15 @@ servers.txt 条目取 `user@host` 中 `@` 之后的部分（`root@db1` → `db1`
   `Esc`（或再次 `e`/`E`）退出编辑模式，未确认的改动丢弃。编辑模式下双击
   服务器同样打开 EDIT 表单（避免误连），双击文件夹仍是折叠/展开。
 
-> M6 打开流程固定为两条 zellij action，无 pane id 解析：先 `move-focus right`
-> 把会话焦点带到右主区（让随后的分屏发生在右侧、不碰左栏导航），再
-> `new-pane -- <命令>`——该命令作为新窗格的 argv 直接执行、不经 shell，
-> 不向任何已有窗格写入按键。打开的焦点会落在右侧新窗格内，返回左栏导航用
-> Zellij 的 Alt+h。
-> M7（右侧定位修复）：每次打开前先跑一次 `zellij action dump-layout`，解析
-> 当前 tab 的 KDL 布局树（0.45.x 输出为 KDL、无 pane id/绝对坐标），把左栏
-> 20% 导航列与 tab-bar/status-bar 排除后选**右侧面积最大**的窗格为目标，
-> 用 N× `move-focus right` 把焦点确定性走到该列，再 `new-pane --direction
-> right -- <命令>` 强制平铺拆分——每点一次都在右区新增一个可见窗格（不再是
-> 无方向 new-pane 在窗格变窄后悄悄叠栈、看似"最多两个右窗格"）。dump 解析
-> 失败、多 tab 无法判定当前页、或右区存在旧叠栈/行拆等不可走形状时，自动退回
-> 上面 M6 流程。
+> M8 起打开语义按模式拆分：侧栏（`--section servers|files`）恢复为开**全新
+> Zellij tab**——单条 `zellij action new-tab --name <tab> -- <命令>`（内置
+> localhost 用 `--name local`，shell 可省略交给 Zellij 默认），不再
+> move-focus / new-pane / 向已有窗格打字（M6/M7 的右主区分窗流程作废）。
+> 独立模式（默认 both、无 `--section`）则不再驱动 Zellij：Update 返回
+> tea.Quit 之前由 `prepareExec` 停掉内嵌 ws 并记录 argv，bubbletea 正常退出
+> 清理 alt-screen 后，main() 用 `syscall.Exec` 把当前进程替换成目标命令
+> （ssh / 本地 shell / nvim、vim），因此 ssh 退出后直接回到启动 nav 的外层
+> shell、nav 不会复活。独立模式无需 Zellij，任何终端都可用。
 
 服务器悬浮表单内：`Tab` / 方向键切换字段，`Enter` 保存（Enable），
 `Esc` 取消（Cancel）。「改组名」表单同样支持 Tab/方向键、Enter 保存、

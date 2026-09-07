@@ -1,11 +1,11 @@
 package ui
 
-// M4/M5/M6 row-model regression tests: keyboard-reachable [NEW]/[EDIT] ops
-// (now one combined row under the title), the localhost right-pane
+// M4/M5/M6/M8 row-model regression tests: keyboard-reachable [NEW]/[EDIT] ops
+// (now one combined row under the title), the localhost sidebar new-tab
 // behaviour, group-folder rendering / fold / open, the server-row column
 // order (pointer → status square → name) and opening servers in brand-new
-// panes of the right main area (M6) instead of opening full-screen tabs or
-// typing into existing panes.
+// Zellij tabs (M8 sidebar) instead of right-pane splits or typing into
+// existing panes.
 
 import (
 	"os"
@@ -341,11 +341,12 @@ func TestServerList_GroupFolderCollapseExpandAndDoubleClick(t *testing.T) {
 }
 
 // TestServerList_OpenServerInsideGroupConnects tests that Enter on a child
-// row opens a new pane running ssh (recorded through a fake zellij).
+// row opens a brand-new Zellij tab running ssh (recorded through a fake
+// zellij) — the M8 sidebar behaviour.
 func TestServerList_OpenServerInsideGroupConnects(t *testing.T) {
 	t.Setenv("ZELLIJ", "1")
 	log := filepath.Join(t.TempDir(), "zellij.log")
-	empty := writeSideFile(t, "") // never queried in M6
+	empty := writeSideFile(t, "")
 	uiFakeZellijRecorder(t, empty, log)
 	m, _ := newServersModel(t, "db1|root@10.0.0.5:22|prod|dc|\napp1|root@10.0.0.6:22||dc|\n")
 
@@ -369,37 +370,27 @@ func TestServerList_OpenServerInsideGroupConnects(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(raw)
-	// M7: no full-screen new tab, no typing into an existing pane — the ssh
-	// session starts in its own brand-new pane after consulting the live
-	// layout (dump-layout) and moving focus right. The fake dump is empty,
-	// so the plan legitimately falls back to the legacy M6 steps.
-	for _, banned := range []string{"new-tab", "write", "list-panes"} {
+	// M8 sidebar: one `new-tab` action, no layout dump, no pane steering,
+	// no typing into an existing pane.
+	for _, banned := range []string{"move-focus", "new-pane", "write", "list-panes", "dump-layout"} {
 		if strings.Contains(s, banned) {
-			t.Fatalf("must not %s, fake zellij saw: %s", banned, s)
+			t.Fatalf("sidebar open must not %s, fake zellij saw: %s", banned, s)
 		}
 	}
-	if !strings.Contains(s, "action dump-layout") {
-		t.Fatalf("M7 must consult the live layout via dump-layout, got: %s", s)
-	}
-	for _, want := range []string{"action move-focus right", "action new-pane -- ssh root@10.0.0.5"} {
-		if !strings.Contains(s, want) {
-			t.Fatalf("fake zellij must have seen %q, got: %s", want, s)
-		}
+	if !strings.Contains(s, "action new-tab --name db1 -- ssh root@10.0.0.5") {
+		t.Fatalf("fake zellij must have seen the new-tab ssh argv, got: %s", s)
 	}
 }
 
-// TestServerList_OpenServerNewPaneCarriesPortAndUser verifies the argv
-// reaching `zellij action new-pane --` reuses the ssh/sshpass logic (port and
-// user@host are explicit argv elements, no pane resolution runs).
-func TestServerList_OpenServerNewPaneCarriesPortAndUser(t *testing.T) {
+// TestServerList_OpenServerNewTabCarriesPortAndUser verifies the argv
+// reaching `zellij action new-tab --name … --` reuses the ssh/sshpass logic
+// (port and user@host are explicit argv elements).
+func TestServerList_OpenServerNewTabCarriesPortAndUser(t *testing.T) {
 	t.Setenv("ZELLIJ", "1")
 	log := filepath.Join(t.TempDir(), "zellij.log")
-	// The recorder would answer list-panes with the real sidebar fixture if
-	// the TUI still asked for a pane id — it must not in M6.
-	paneJSON := writeSideFile(t, `[
-  {"id":0,"is_plugin":false,"title":"nav4neil-servers","pane_command":"nav4neil --section servers","pane_x":0,"pane_rows":14,"tab_id":0},
-  {"id":1,"is_plugin":false,"title":"💻 终端","pane_command":"fish","pane_x":28,"pane_rows":28,"tab_id":0}
-]`)
+	// The recorder must never be asked for layout/list data in M8; replay an
+	// empty answer so any accidental query still logs cleanly.
+	paneJSON := writeSideFile(t, "")
 	uiFakeZellijRecorder(t, paneJSON, log)
 	m, _ := newServersModel(t, "db1|root@10.0.0.5:2222|prod||\n")
 	idx := rowIndexOfAlias(m, "db1")
@@ -408,19 +399,18 @@ func TestServerList_OpenServerNewPaneCarriesPortAndUser(t *testing.T) {
 	if m.svFailed["db1"] {
 		t.Fatalf("open must not fail: %+v", m.svFailed)
 	}
-	if !strings.Contains(m.status, "new pane, right area") {
-		t.Fatalf("status must describe the new-pane open, got %q", m.status)
+	if !strings.Contains(m.status, "new tab") {
+		t.Fatalf("status must describe the new-tab open, got %q", m.status)
 	}
 	raw, _ := os.ReadFile(log)
 	s := string(raw)
-	if strings.Contains(s, "move-focus") && !strings.Contains(s, "new-pane") {
-		t.Fatalf("focus move without a new pane is the old M5 flow: %s", s)
+	if !strings.Contains(s, "action new-tab --name db1 -- ssh -p 2222 root@10.0.0.5") {
+		t.Fatalf("new-tab argv must carry port and user@host, got: %s", s)
 	}
-	if !strings.Contains(s, "new-pane -- ssh -p 2222 root@10.0.0.5") {
-		t.Fatalf("new-pane argv must carry port and user@host, got: %s", s)
-	}
-	if strings.Contains(s, "list-panes") || strings.Contains(s, "write") {
-		t.Fatalf("M6 must not resolve a pane id or type into one: %s", s)
+	for _, banned := range []string{"move-focus", "new-pane", "write", "list-panes", "dump-layout"} {
+		if strings.Contains(s, banned) {
+			t.Fatalf("M8 sidebar must not %s: %s", banned, s)
+		}
 	}
 }
 
@@ -442,12 +432,13 @@ func TestServerList_NoGroupsFlatLayout(t *testing.T) {
 	}
 }
 
-// TestLocalhost_OpenInsideZellijOpensLocalShellPane verifies the M6 localhost
-// behaviour inside a Zellij session: opening localhost runs move-focus right
-// + `zellij action new-pane` (fake binary records the args), and the ledger
-// turns green. SHELL is pinned empty so the shell resolution is deterministic
-// (fish is absent from the fake PATH → plan falls back to plain new-pane).
-func TestLocalhost_OpenInsideZellijOpensLocalShellPane(t *testing.T) {
+// TestLocalhost_OpenInsideZellijOpensLocalShellTab verifies the M8 sidebar
+// localhost behaviour inside a Zellij session: opening localhost runs a
+// single `zellij action new-tab --name local` (fake binary records the
+// args), and the ledger turns green. SHELL is pinned empty and the fake PATH
+// carries no fish, so the shell resolution is deterministic: the new tab
+// starts with Zellij's default shell.
+func TestLocalhost_OpenInsideZellijOpensLocalShellTab(t *testing.T) {
 	t.Setenv("ZELLIJ", "1")
 	t.Setenv("SHELL", "")
 	log := filepath.Join(t.TempDir(), "zellij.log")
@@ -459,20 +450,22 @@ func TestLocalhost_OpenInsideZellijOpensLocalShellPane(t *testing.T) {
 	}
 	m.openSelectedServer()
 	if !strings.Contains(m.status, "local") {
-		t.Fatalf("status must confirm the local shell pane, got %q", m.status)
+		t.Fatalf("status must confirm the local shell tab, got %q", m.status)
 	}
 	if !m.svOK["localhost"] {
 		t.Fatalf("successful localhost open must be recorded OK")
 	}
 	raw, _ := os.ReadFile(log)
 	s := string(raw)
-	for _, want := range []string{"action move-focus right", "action new-pane"} {
+	for _, want := range []string{"action new-tab", "--name", "local"} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("fake zellij must have seen %q, got: %s", want, s)
 		}
 	}
-	if strings.Contains(s, "new-tab") || strings.Contains(s, "write") {
-		t.Fatalf("localhost must never open a tab or type into a pane: %s", s)
+	for _, banned := range []string{"move-focus", "new-pane", "write"} {
+		if strings.Contains(s, banned) {
+			t.Fatalf("localhost sidebar must never %s: %s", banned, s)
+		}
 	}
 }
 
