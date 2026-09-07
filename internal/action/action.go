@@ -155,6 +155,95 @@ func SshNewPanePlan(e servers.Entry) Plan {
 	}
 }
 
+// moveFocusSteps returns RightMoves× `zellij action move-focus right`,
+// the M7 cursor walk that lands focus on the biggest right pane.
+func moveFocusSteps(t Target) [][]string {
+	steps := make([][]string, 0, t.RightMoves)
+	for i := 0; i < t.RightMoves; i++ {
+		steps = append(steps, []string{"zellij", "action", "move-focus", "right"})
+	}
+	return steps
+}
+
+// DumpLayout runs `zellij action dump-layout` and returns its stdout. ok is
+// false when the dump failed (outside Zellij, no session, timeout, …).
+func DumpLayout(ctx context.Context) (out string, ok bool) {
+	cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	raw, err := exec.CommandContext(cctx, "zellij", "action", "dump-layout").Output()
+	if err != nil {
+		return "", false
+	}
+	return string(raw), true
+}
+
+// targetedNewPaneArgv extracts the command that follows `--` inside one
+// legacy new-pane step ("zellij action new-pane -- ssh …"), so the M7
+// direction-right variant can reuse the exact same ssh/shell argv.
+func targetedNewPaneArgv(step []string) []string {
+	for i, a := range step {
+		if a == "--" {
+			return step[i+1:]
+		}
+	}
+	return nil
+}
+
+// targetedNewPane builds the argv of the M7 split: `zellij action new-pane
+// --direction right [-- <argv>]`. The explicit direction forces a visible
+// tiled split of the focused pane (Zellij's direction-less new-pane instead
+// picks the biggest space and starts silently stacking once panes get too
+// small to split — the M6 bug this targets).
+func targetedNewPane(argv []string) []string {
+	np := []string{"zellij", "action", "new-pane", "--direction", "right"}
+	if len(argv) > 0 {
+		np = append(np, "--")
+		np = append(np, argv...)
+	}
+	return np
+}
+
+// SshNewPanePlanTargeted is the M7 open plan for one ssh entry. When the
+// layout analysis (AnalyzeLayout) found a usable right target, the plan
+// walks focus onto the biggest right pane (RightMoves× move-focus right)
+// and then forces a visible tiled split with `new-pane --direction right`
+// running e's ssh argv — every click adds one more pane to the right area
+// instead of silently stacking into the same column. When the analysis is
+// not usable it falls back to the legacy SshNewPanePlan exactly.
+func SshNewPanePlanTargeted(e servers.Entry, t Target) Plan {
+	fallback := SshNewPanePlan(e)
+	if !t.UsableTarget() {
+		return fallback
+	}
+	last := fallback.Steps[len(fallback.Steps)-1]
+	return Plan{
+		UseZellij: true,
+		TabName:   fallback.TabName,
+		SshTarget: fallback.SshTarget,
+		Detected:  "zellij",
+		Steps:     append(moveFocusSteps(t), targetedNewPane(targetedNewPaneArgv(last))),
+	}
+}
+
+// LocalhostNewPanePlanTargeted is the M7 localhost counterpart of
+// SshNewPanePlanTargeted: same cursor walk, then a direction-right split
+// running the local shell. Falls back to the legacy
+// LocalhostNewPanePlan when the layout analysis is not usable.
+func LocalhostNewPanePlanTargeted(shell string, t Target) Plan {
+	fallback := LocalhostNewPanePlan(shell)
+	if !t.UsableTarget() {
+		return fallback
+	}
+	last := fallback.Steps[len(fallback.Steps)-1]
+	return Plan{
+		UseZellij: true,
+		TabName:   "local",
+		SshTarget: "local",
+		Detected:  "zellij",
+		Steps:     append(moveFocusSteps(t), targetedNewPane(targetedNewPaneArgv(last))),
+	}
+}
+
 // LocalShell picks the command that opens a local shell pane for the
 // built-in localhost row: fish when it is on PATH (the stack's preferred
 // shell), otherwise $SHELL, otherwise "" — meaning "let Zellij open its

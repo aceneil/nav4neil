@@ -1097,6 +1097,15 @@ func (m *Model) openEntry(e servers.Entry) {
 		m.status = fmt.Sprintf("→ %s: not inside Zellij — start zellij to open it in the right pane", plan.TabName)
 		return
 	}
+	// M7: inside Zellij, consult the live layout once and, when the right
+	// area is cleanly analysable, target the biggest right pane (walk focus
+	// onto it, then force a visible direction-right split). An unparseable
+	// or stacked layout falls back to the M6 plan built above.
+	if action.InZellij() {
+		if dump, ok := action.DumpLayout(context.Background()); ok {
+			plan = action.SshNewPanePlanTargeted(e, action.AnalyzeLayout(dump))
+		}
+	}
 	m.ctx = servers.TabName(e)
 	if m.wss != nil {
 		m.wss.SetContext(m.ctx)
@@ -1123,7 +1132,13 @@ func (m *Model) openLocalhost() {
 		m.status = "localhost: not inside Zellij — start zellij to open a local shell in the right pane"
 		return
 	}
-	plan := action.LocalhostNewPanePlan(action.LocalShell())
+	shell := action.LocalShell()
+	plan := action.LocalhostNewPanePlan(shell)
+	// M7: prefer targeting the biggest right pane from the live layout
+	// (falls back to the M6 plan when the dump cannot steer us).
+	if dump, ok := action.DumpLayout(context.Background()); ok {
+		plan = action.LocalhostNewPanePlanTargeted(shell, action.AnalyzeLayout(dump))
+	}
 	m.ctx = "local"
 	if m.wss != nil {
 		m.wss.SetContext(m.ctx)

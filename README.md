@@ -172,11 +172,19 @@ servers.txt 条目取 `user@host` 中 `@` 之后的部分（`root@db1` → `db1`
   `Esc`（或再次 `e`/`E`）退出编辑模式，未确认的改动丢弃。编辑模式下双击
   服务器同样打开 EDIT 表单（避免误连），双击文件夹仍是折叠/展开。
 
-> 打开流程固定为两条 zellij action，无 pane id 解析：先 `move-focus right`
+> M6 打开流程固定为两条 zellij action，无 pane id 解析：先 `move-focus right`
 > 把会话焦点带到右主区（让随后的分屏发生在右侧、不碰左栏导航），再
 > `new-pane -- <命令>`——该命令作为新窗格的 argv 直接执行、不经 shell，
 > 不向任何已有窗格写入按键。打开的焦点会落在右侧新窗格内，返回左栏导航用
 > Zellij 的 Alt+h。
+> M7（右侧定位修复）：每次打开前先跑一次 `zellij action dump-layout`，解析
+> 当前 tab 的 KDL 布局树（0.45.x 输出为 KDL、无 pane id/绝对坐标），把左栏
+> 20% 导航列与 tab-bar/status-bar 排除后选**右侧面积最大**的窗格为目标，
+> 用 N× `move-focus right` 把焦点确定性走到该列，再 `new-pane --direction
+> right -- <命令>` 强制平铺拆分——每点一次都在右区新增一个可见窗格（不再是
+> 无方向 new-pane 在窗格变窄后悄悄叠栈、看似"最多两个右窗格"）。dump 解析
+> 失败、多 tab 无法判定当前页、或右区存在旧叠栈/行拆等不可走形状时，自动退回
+> 上面 M6 流程。
 
 服务器悬浮表单内：`Tab` / 方向键切换字段，`Enter` 保存（Enable），
 `Esc` 取消（Cancel）。「改组名」表单同样支持 Tab/方向键、Enter 保存、

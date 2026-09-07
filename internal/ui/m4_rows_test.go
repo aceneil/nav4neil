@@ -369,12 +369,17 @@ func TestServerList_OpenServerInsideGroupConnects(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(raw)
-	// M6: no full-screen new tab, no typing into an existing pane — the ssh
-	// session starts in its own brand-new pane after moving focus right.
-	for _, banned := range []string{"new-tab", "write", "list-panes", "dump-layout"} {
+	// M7: no full-screen new tab, no typing into an existing pane — the ssh
+	// session starts in its own brand-new pane after consulting the live
+	// layout (dump-layout) and moving focus right. The fake dump is empty,
+	// so the plan legitimately falls back to the legacy M6 steps.
+	for _, banned := range []string{"new-tab", "write", "list-panes"} {
 		if strings.Contains(s, banned) {
-			t.Fatalf("M6 must not %s, fake zellij saw: %s", banned, s)
+			t.Fatalf("must not %s, fake zellij saw: %s", banned, s)
 		}
+	}
+	if !strings.Contains(s, "action dump-layout") {
+		t.Fatalf("M7 must consult the live layout via dump-layout, got: %s", s)
 	}
 	for _, want := range []string{"action move-focus right", "action new-pane -- ssh root@10.0.0.5"} {
 		if !strings.Contains(s, want) {
