@@ -49,7 +49,7 @@
 ## 两种使用模式（M8 / M9）
 
 模式由 `--section` 决定：**有 `--section servers|files` = 侧栏嵌入**；
-**不带 `--section`（默认 `both`）= 独立模式**。二者对「打开」的语义不同
+**`--section both`/`all`（或 M11 启动菜单里选 `all`）= 独立模式**。二者对「打开」的语义不同
 （内置 `herdr` 例外：两种模式都只弹 Zellij 悬浮窗，见下表与下节）：
 
 | | 服务器 / localhost | 文件 | 内置 herdr |
@@ -110,22 +110,53 @@ nav4neil [options]
 -start-dir <path>   起始目录（默认 $HOME）
 -ws-port <n>        WebSocket 起始端口（默认 39771，被占用后递增）
 -no-ws              禁用内嵌 WebSocket 服务
--section <s>        both（默认）、servers 或 files；也接受 --section
+-section <s>        both（默认）、servers、files 或 all；也接受 --section
+-menu               启动前强制显示一级选择菜单（servers/files/all，M11）
+-no-menu            不显示选择菜单（无 --section 时直接按 both 运行）
 -list               解析服务器列表并以文本输出后退出
 -version            输出版本
 -help               输出帮助
 ```
 
-**独立模式**：不加 `-section`（默认 `both`）时单个进程显示上下两个区段。
-在该模式下回车/双击服务器或文件 = 退出 nav 并在当前 pane 执行目标
-（ssh / 本地 shell / nvim、vim），nav 不再回来（内置 `herdr` 除外——
-它只弹 Zellij 悬浮窗，见下）：
+**独立模式（`all` = 两区）**：`-section both` / `-section all`，或在 M11 启动菜单里
+选 `all` —— 单个进程显示上下两个区段。在该模式下回车/双击服务器或文件 = 退出
+nav 并在当前 pane 执行目标（ssh / 本地 shell / nvim、vim），nav 不再回来
+（内置 `herdr` 除外——它只弹 Zellij 悬浮窗，见下）：
 
 ```bash
-nav4neil
+nav4neil              # 手动呼出：先出菜单，选 all
+nav4neil --no-menu    # 跳过菜单，直接进 all；等同 --section both
 ```
 
-`both` 模式下可用 `Tab` 在 pane 间切换，`1`/`2` 直接切换服务器/文件区段。
+`all` 模式（两区）可用 `Tab` 在「服务器 / 文件」两区之间**循环切换焦点**，
+`1`/`2` 直达某一区；状态栏上方**常驻一行提示**：
+
+```text
+Tab: 切换 服务器/文件   ·   1: 服务器 · 2: 文件
+```
+
+### 手动呼出：启动选择菜单（M11）
+
+裸敲 `nav4neil`（**完全不带 `--section`**）时先显示一级选择菜单，选定后才进入
+对应模式：
+
+| 菜单项 | 等价启动参数 | 进入的模式 |
+| --- | --- | --- |
+| `servers`（默认高亮） | `--section servers` | 侧栏嵌入：点服务器 = 开新 Zellij tab |
+| `files` | `--section files` | 侧栏嵌入：Enter = wz-open 悬浮编辑器 |
+| `all` | `--section both` | 两区独立模式：`Tab` 切换焦点，Enter = 当前 pane exec |
+
+- 键盘：`↑`/`↓`（或 `j`/`k`）移动（循环），`Enter` 确认，`Esc`/`q`（或 `Ctrl+C`）
+  退出程序（不启动 TUI）。
+- 菜单只是「一级选择」，选项含义与对应 `--section` 完全一致 —— 所以选
+  `servers`/`files` 得到的是**侧栏语义**（点服务器开新 tab、需在 Zellij 内），
+  选 `all` 得到 M8 的独立模式（回车退出 TUI 并在当前 pane exec ssh/编辑器）。
+- **不弹菜单的情形**（布局脚本/CI 不受影响）：启动时带了 `--section`（**包括显式
+  `--section both`**）、`--no-menu`、`--list`，或 stdin 不是终端（无 TTY）。
+- `--menu` 强制显示（即使同时给了 `--section`，菜单选择优先）；`--no-menu` 显式
+  抑制：无 `--section` 时直接按 `both` 运行，与 M10 行为一致。
+- 端到端验证脚本：`python3 scripts/m11_menu_smoke.py`（PTY 驱动真实二进制，
+  覆盖菜单/不弹菜单/Tab 切换等 13 项检查）。
 
 **侧栏嵌入模式**：`-section servers|files` 只运行一个区段（也不会加载另一个
 不相关的数据源），适合放进 Zellij 的 stacked pane（wznav 布局）。此时点
@@ -188,7 +219,7 @@ servers.txt 条目取 `user@host` 中 `@` 之后的部分（`root@db1` → `db1`
 | `n` / `N` | 服务器区段：新建服务器（悬浮表单） |
 | `e` / `E` | 服务器区段：进入/退出编辑模式（进入后 `<NEW> <EDIT>` + 绿光标并跳到第一个服务器） |
 | `Esc` | 退出编辑模式；清除过滤或取消悬浮表单 |
-| `1` / `2` / `Tab` | `both` 模式切换 pane |
+| `1` / `2` / `Tab` | `all`（两区）模式切换「服务器 / 文件」焦点（状态栏上方有常驻提示行；单区模式忽略） |
 | `/` | 过滤当前区段 |
 | `r` | 刷新服务器、文件或当前区段 |
 | `?` | 显示快捷键提示 |
@@ -244,6 +275,13 @@ servers.txt 条目取 `user@host` 中 `@` 之后的部分（`root@db1` → `db1`
 > `~/.local/bin/wz-herdr.sh`（`zellij action new-pane --floating
 > --close-on-exit --name herdr --width 96% --height 96% --x 2% --y 2% -- …`）；
 > 脚本缺失或不在 Zellij 内时仅状态栏提示、nav 保持存活。
+>
+> M11：**手动呼出**（裸敲 `nav4neil`、不带 `--section`）时先显示一级选择菜单
+> （`servers` / `files` / `all`，`↑`/`↓` 或 `j`/`k` 移动、`Enter` 确认、`Esc`/`q`
+> 退出），选定后等同对应 `--section`。布局/脚本传 `--section`（含显式 `both`）、
+> 无 TTY、`--list` 都不弹菜单；另有 `--menu` 强制、`--no-menu` 抑制。两区（`all`）
+> 布局在状态栏上方新增**常驻提示行** `Tab: 切换 服务器/文件`，`Tab` 循环切换两区
+> 焦点（`1`/`2` 直达）；文件区可见行数因此比 M10 少 1 行。
 
 服务器悬浮表单内：`Tab` / 方向键切换字段，`Enter` 保存（Enable），
 `Esc` 取消（Cancel）。「改组名」表单同样支持 Tab/方向键、Enter 保存、
@@ -295,6 +333,7 @@ Yazi 图标数据的完整 MIT 许可见 `LICENSE-ICONS`。
 ├── go.mod / go.sum
 ├── cmd/nav4neil/              # 主程序
 ├── cmd/_smoke/                      # ws 与 action 冒烟驱动
+├── scripts/                         # M11 菜单 PTY 端到端冒烟（Python）
 └── internal/
     ├── icon/                        # Yazi 同规模 Nerd Font 图标表
     ├── servers/                     # SSH 配置与 servers.txt 解析

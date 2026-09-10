@@ -16,9 +16,14 @@
 //	│ ctx: local  | ? help  │
 //	└───────────────────────┘
 //
-// Panes are tab-cycled with Tab / 1 / 2. '/' filters the active pane.
-// On startup the program also boots the local websocket server from
-// internal/ws (best-effort, never blocks the TUI).
+// Panes are tab-cycled with Tab / 1 / 2 — in the two-pane (all) layout the
+// always-on hint row above the status bar spells that out (paneHintRow).
+// '/' filters the active pane. On startup the program also boots the local
+// websocket server from internal/ws (best-effort, never blocks the TUI).
+//
+// M11: a bare `nav4neil` (no --section) first shows the one-level launch
+// menu from menu.go and then runs the chosen area, so the Section may be
+// picked interactively instead of on the command line.
 //
 // Single-section mode (SectionServers / SectionFiles): the model renders
 // exactly one pane and consumes the full height minus the title + status
@@ -73,18 +78,20 @@ const (
 )
 
 // ParseSection converts a CLI string into a Section. Empty, "both"
-// (case-insensitive) yield SectionBoth. Unknown values return an error
-// so the CLI can exit cleanly instead of silently falling back.
+// and "all" (case-insensitive) yield SectionBoth — "all" is the label of
+// the M11 launch menu's two-pane row, so `--section all` works too.
+// Unknown values return an error so the CLI can exit cleanly instead of
+// silently falling back.
 func ParseSection(s string) (Section, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "", "both":
+	case "", "both", "all":
 		return SectionBoth, nil
 	case "servers", "server":
 		return SectionServers, nil
 	case "files", "file":
 		return SectionFiles, nil
 	}
-	return SectionBoth, fmt.Errorf("invalid section %q (want both|servers|files)", s)
+	return SectionBoth, fmt.Errorf("invalid section %q (want both|servers|files|all)", s)
 }
 
 // String renders Section in a stable form suitable for the status bar.
@@ -403,9 +410,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = ""
 		return m, nil
 	}
-	// Tab / 1 / 2 only make sense when both sections are visible.
-	// In single-section mode they're silently ignored — the user
-	// moves focus between sibling Zellij panes with Alt+h/j/k/l.
+	// Tab / 1 / 2 only make sense when both sections are visible: in `all`
+	// mode (SectionBoth) Tab cycles the focus between the servers list and
+	// the file browser, which is exactly what the always-on hint row
+	// (paneHintRow) tells the user. In single-section mode they're silently
+	// ignored — the user moves focus between sibling Zellij panes with
+	// Alt+h/j/k/l.
 	if m.section == SectionBoth {
 		switch k {
 		case "tab":
@@ -461,12 +471,14 @@ func helpText(s Section) string {
 	case SectionFiles:
 		return "sidebar: enter = wz-open (floating) · j/k move · h/l parent/into · / filter · r refresh dir · ? help · q quit"
 	default:
-		return "standalone: enter = run in this pane & nav exits · j/k move · / filter · 1/2 panes · tab cycle · r refresh · ? help · q quit"
+		return "all: enter = run in this pane & nav exits · j/k move · / filter · tab/1/2 切换 服务器/文件 · r refresh · ? help · q quit"
 	}
 }
 
 // standalone reports whether this instance runs in standalone mode — the
-// default `nav4neil` with SectionBoth. Standalone opens quit the TUI and
+// two-pane SectionBoth layout, reached with `--section both`, `--section all`,
+// with `--no-menu` (which skips the launch menu and keeps both), or by
+// picking "all" in the M11 launch menu. Standalone opens quit the TUI and
 // replace the current process (ssh / local shell / editor). Sidebar
 // instances (--section servers|files) instead ask Zellij to open new tabs
 // and keep the nav alive.
@@ -982,6 +994,8 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		// SectionBoth: server rows start immediately after the server header.
+		// File rows run from sEnd+2 down to height-2; the M11 pane hint sits
+		// on height-1 and the status line below it, so both stay click-free.
 		if y >= 1 && y < m.serverListEnd() {
 			m.focus = paneServers
 			return m, m.clickServerListRow(msg.X, y-1, double)
@@ -1077,7 +1091,8 @@ func (m *Model) clampSrvTop(vis int) {
 // serverListEnd returns the row index of the section divider (between
 // servers and the file header). Layout:
 // server header (0), servers (1..sEnd-1), divider (sEnd),
-// file header (sEnd+1), files (sEnd+2..height-2), status (last).
+// file header (sEnd+1), files (sEnd+2..height-2), pane hint (height-1),
+// status (last).
 func (m *Model) serverListEnd() int {
 	usable := m.height - 1 // leave 1 for status
 	if usable < 6 {
@@ -1417,7 +1432,11 @@ func (m *Model) View() string {
 		b.WriteByte('\n')
 		b.WriteString(truncRunes(m.sectionHeader(paneFiles), m.width))
 		b.WriteByte('\n')
-		fileRows := m.height - sEnd - 2
+		// M11: one row is reserved for the always-on pane-switch hint
+		// (see paneHintRow), so the file list is one row shorter than in
+		// earlier milestones. fileRows keeps file rows on lines
+		// sEnd+2 … height-2, with the hint on height-1.
+		fileRows := m.height - sEnd - 3
 		if fileRows < 1 {
 			fileRows = 1
 		}
@@ -1427,6 +1446,8 @@ func (m *Model) View() string {
 				b.WriteByte('\n')
 			}
 		}
+		b.WriteByte('\n')
+		b.WriteString(m.paneHintRow())
 	}
 
 	// Status bar.
@@ -1605,6 +1626,18 @@ func (m *Model) renderFileRow(i int) string {
 	// fixed space, keeping names aligned across a long file list.
 	label := " " + marker + icon.Aligned(it.Name, it.IsDir, it.IsLink) + name
 	return truncRunes(pad(label, m.width, ' '), m.width)
+}
+
+// paneHintText is the M11 focus-switch hint shown in `all` mode (SectionBoth,
+// i.e. the two-pane layout): it names the keys that move the focus between
+// the servers list above and the file browser below.
+const paneHintText = "Tab: 切换 服务器/文件   ·   1: 服务器 · 2: 文件"
+
+// paneHintRow renders the always-on hint row that sits directly above the
+// status bar in `all` mode. Single-section sidebars have no second pane to
+// switch to, so they do not render it.
+func (m *Model) paneHintRow() string {
+	return truncRunes(padRunes(paneHintText, m.width), m.width)
 }
 
 func (m *Model) statusLine() string {

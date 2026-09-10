@@ -2,3 +2,4 @@ bin/
 *-REPORT.md
 
 *CODEX*.md
+__pycache__/
